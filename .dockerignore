@@ -1,0 +1,20 @@
+# Frontend
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Backend
+backend/__pycache__
+backend/*.pyc
+backend/infradoc.db
+backend/infradoc.db-shm
+backend/infradoc.db-wal
+backend/.env
+
+# Geral
+.git
+.gitignore
+*.md
+!README.md
+venv/
+.DS_Store

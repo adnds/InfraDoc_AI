@@ -257,6 +257,9 @@ export default function Login({ onLogin }) {
 
         <div style={{ textAlign: 'center', marginTop: 24, fontSize: 11, color: 'var(--text-muted)' }}>
           InfraDoc AI v1.0 · Residência IA Generativa
+          <div style={{ marginTop: 4, fontSize: 10 }}>
+            © {new Date().getFullYear()} Adilson Santos — Todos os direitos reservados
+          </div>
         </div>
       </div>
     </div>

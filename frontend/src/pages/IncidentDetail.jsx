@@ -221,8 +221,8 @@ export default function IncidentDetail() {
                 <Zap size={13} />
                 Diagnóstico IA
                 <div className="ai-tag" style={{ marginLeft: 'auto', fontSize: 9 }}>
-                  {incident.diagnosis_source === 'claude' ? 'claude' : 'mock'}
-                  {incident.diagnosis_source === 'claude' && incident.diagnosis_confidence
+                  {incident.diagnosis_source === 'groq' ? 'groq' : 'mock'}
+                  {incident.diagnosis_source === 'groq' && incident.diagnosis_confidence
                     ? ` · confiança ${incident.diagnosis_confidence}` : ''}
                 </div>
               </div>
@@ -255,10 +255,10 @@ export default function IncidentDetail() {
 
             <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border-subtle)' }}>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                {incident.diagnosis_source === 'claude' ? (
-                  <>🤖 <strong style={{ color: 'var(--text-secondary)' }}>Claude (Anthropic):</strong> Este diagnóstico foi gerado por IA com acesso a ferramentas (inventário do rack, histórico de incidentes, base de conhecimento).</>
+                {incident.diagnosis_source === 'groq' ? (
+                  <>🤖 <strong style={{ color: 'var(--text-secondary)' }}>Groq (Llama 3.3 70B):</strong> Este diagnóstico foi gerado por IA com acesso a ferramentas (inventário do rack, histórico de incidentes, base de conhecimento).</>
                 ) : (
-                  <>⚠️ <strong style={{ color: 'var(--text-secondary)' }}>Modo Mock:</strong> Este diagnóstico foi gerado por regras estáticas (sem chamada de IA — verifique se ANTHROPIC_API_KEY está configurada).</>
+                  <>⚠️ <strong style={{ color: 'var(--text-secondary)' }}>Modo Mock:</strong> Este diagnóstico foi gerado por regras estáticas (sem chamada de IA — verifique se GROQ_API_KEY está configurada).</>
                 )}
               </div>
             </div>

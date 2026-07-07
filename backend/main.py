@@ -131,7 +131,7 @@ def init_db():
             priority TEXT NOT NULL,
             estimated_duration TEXT,
             status TEXT DEFAULT 'open',
-            created_by TEXT DEFAULT 'claude-ai',
+            created_by TEXT DEFAULT 'groq-ai',
             created_at TEXT NOT NULL
         );
     """)
@@ -373,7 +373,7 @@ def generate_mock_diagnosis(equipment_type: str, symptoms: str) -> dict:
         "next_steps": "1. Coletar mais informações\n2. Verificar logs\n3. Escalar para nível 2"
     })
 
-# --- Diagnóstico via Claude (tool use) ---
+# --- Diagnóstico via Groq (tool use) ---
 # Documentação completa das ferramentas e do system prompt em tools/tools.md e prompts/system_prompt.txt
 
 def _tool_get_rack_inventory(rack_id: str) -> dict:
@@ -430,61 +430,75 @@ def _tool_create_maintenance_ticket(incident_id: str, equipment_name: str, actio
     conn.execute(
         "INSERT INTO maintenance_tickets (id, incident_id, equipment_name, action_required, priority, estimated_duration, status, created_by, created_at) "
         "VALUES (?,?,?,?,?,?,?,?,?)",
-        (ticket_id, incident_id, equipment_name, action_required, priority, estimated_duration, "open", "claude-ai", now)
+        (ticket_id, incident_id, equipment_name, action_required, priority, estimated_duration, "open", "groq-ai", now)
     )
     conn.commit()
     conn.close()
     return {"ticket_id": ticket_id, "status": "created"}
 
-CLAUDE_TOOLS = [
+# Groq usa o formato de tools compatível com OpenAI: {"type": "function", "function": {name, description, parameters}}
+# (diferente do formato nativo da Anthropic, que usa "input_schema" direto no nível superior)
+GROQ_TOOLS = [
     {
-        "name": "get_rack_inventory",
-        "description": "Retorna o inventário completo de um rack específico, incluindo todos os equipamentos, seus IPs, status atual e posição. Use quando precisar entender o contexto de equipamentos vizinhos ao afetado, ou verificar se outros equipamentos do mesmo rack estão com problema.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "rack_id": {"type": "string", "description": "Identificador do rack (ex: 'A1', 'B3', 'DC-Externo')"}
-            },
-            "required": ["rack_id"]
-        }
-    },
-    {
-        "name": "get_incident_history",
-        "description": "Retorna o histórico de incidentes anteriores de um equipamento ou rack. Use para identificar padrões de falha recorrente, verificar se o problema já ocorreu antes e o que resolveu, e correlacionar com mudanças recentes.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "equipment_name": {"type": "string", "description": "Nome exato do equipamento (ex: 'SRV-APP-01'). Opcional se rack_id for fornecido."},
-                "rack_id": {"type": "string", "description": "ID do rack para buscar todos os incidentes do rack. Opcional se equipment_name for fornecido."},
-                "limit": {"type": "integer", "description": "Número máximo de incidentes a retornar. Padrão: 5.", "default": 5}
+        "type": "function",
+        "function": {
+            "name": "get_rack_inventory",
+            "description": "Retorna o inventário completo de um rack específico, incluindo todos os equipamentos, seus IPs, status atual e posição. Use quando precisar entender o contexto de equipamentos vizinhos ao afetado, ou verificar se outros equipamentos do mesmo rack estão com problema.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rack_id": {"type": "string", "description": "Identificador do rack (ex: 'A1', 'B3', 'DC-Externo')"}
+                },
+                "required": ["rack_id"]
             }
         }
     },
     {
-        "name": "search_knowledge_base",
-        "description": "Busca na base de conhecimento interno soluções para problemas conhecidos, runbooks e procedimentos padrão. Use quando o diagnóstico indicar um problema com solução documentada (ex: 'servidor lento', 'loop de rede', 'bateria degradada').",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Descrição do problema a buscar (ex: 'servidor reiniciando memória RAM', 'switch loop spanning tree')"},
-                "equipment_type": {"type": "string", "enum": ["server", "switch", "firewall", "pdu", "ups", "storage", "router"], "description": "Tipo de equipamento para filtrar resultados"}
-            },
-            "required": ["query"]
+        "type": "function",
+        "function": {
+            "name": "get_incident_history",
+            "description": "Retorna o histórico de incidentes anteriores de um equipamento ou rack. Use para identificar padrões de falha recorrente, verificar se o problema já ocorreu antes e o que resolveu, e correlacionar com mudanças recentes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "equipment_name": {"type": "string", "description": "Nome exato do equipamento (ex: 'SRV-APP-01'). Opcional se rack_id for fornecido."},
+                    "rack_id": {"type": "string", "description": "ID do rack para buscar todos os incidentes do rack. Opcional se equipment_name for fornecido."},
+                    "limit": {"type": "integer", "description": "Número máximo de incidentes a retornar. Padrão: 5.", "default": 5}
+                }
+            }
         }
     },
     {
-        "name": "create_maintenance_ticket",
-        "description": "Cria automaticamente um ticket de manutenção programada quando o diagnóstico identificar ação preventiva necessária (ex: substituição de bateria, atualização de firmware, substituição de hardware). Use apenas quando o diagnóstico tiver confidence 'high'.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "incident_id": {"type": "string", "description": "ID do incidente que originou a necessidade de manutenção"},
-                "equipment_name": {"type": "string", "description": "Nome do equipamento que precisa de manutenção"},
-                "action_required": {"type": "string", "description": "Ação de manutenção necessária (ex: 'Substituição de bateria do no-break')"},
-                "priority": {"type": "string", "enum": ["urgent", "high", "normal", "low"], "description": "Prioridade baseada no impacto do não-atendimento"},
-                "estimated_duration": {"type": "string", "description": "Duração estimada da manutenção (ex: '2 horas')"}
-            },
-            "required": ["incident_id", "equipment_name", "action_required", "priority"]
+        "type": "function",
+        "function": {
+            "name": "search_knowledge_base",
+            "description": "Busca na base de conhecimento interno soluções para problemas conhecidos, runbooks e procedimentos padrão. Use quando o diagnóstico indicar um problema com solução documentada (ex: 'servidor lento', 'loop de rede', 'bateria degradada').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Descrição do problema a buscar (ex: 'servidor reiniciando memória RAM', 'switch loop spanning tree')"},
+                    "equipment_type": {"type": "string", "enum": ["server", "switch", "firewall", "pdu", "ups", "storage", "router"], "description": "Tipo de equipamento para filtrar resultados"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_maintenance_ticket",
+            "description": "Cria automaticamente um ticket de manutenção programada quando o diagnóstico identificar ação preventiva necessária (ex: substituição de bateria, atualização de firmware, substituição de hardware). Use apenas quando o diagnóstico tiver confidence 'high'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "incident_id": {"type": "string", "description": "ID do incidente que originou a necessidade de manutenção"},
+                    "equipment_name": {"type": "string", "description": "Nome do equipamento que precisa de manutenção"},
+                    "action_required": {"type": "string", "description": "Ação de manutenção necessária (ex: 'Substituição de bateria do no-break')"},
+                    "priority": {"type": "string", "enum": ["urgent", "high", "normal", "low"], "description": "Prioridade baseada no impacto do não-atendimento"},
+                    "estimated_duration": {"type": "string", "description": "Duração estimada da manutenção (ex: '2 horas')"}
+                },
+                "required": ["incident_id", "equipment_name", "action_required", "priority"]
+            }
         }
     },
 ]
@@ -509,21 +523,23 @@ def _load_system_prompt() -> str:
             "Responda SOMENTE em JSON com os campos diagnosis, root_cause, next_steps e confidence."
         )
 
-def generate_claude_diagnosis(incident_id: str, equipment_type: str, equipment_name: str, rack: str,
-                               severity: str, symptoms: str, history: Optional[str]) -> Optional[dict]:
-    """Gera o diagnóstico chamando a API da Claude com tool use. Retorna None em qualquer falha
-    (sem API key, erro de rede, JSON inválido, etc.) para acionar o fallback de mock."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+def generate_groq_diagnosis(incident_id: str, equipment_type: str, equipment_name: str, rack: str,
+                             severity: str, symptoms: str, history: Optional[str]) -> Optional[dict]:
+    """Gera o diagnóstico chamando a API da Groq (Llama 3.3 70B) com tool use. Retorna None em
+    qualquer falha (sem API key, erro de rede, JSON inválido, etc.) para acionar o fallback de mock."""
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return None
 
     try:
-        import anthropic
+        from groq import Groq
     except ImportError:
         return None
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = Groq(api_key=api_key)
         system_prompt = _load_system_prompt()
 
         user_message = (
@@ -535,41 +551,57 @@ def generate_claude_diagnosis(incident_id: str, equipment_type: str, equipment_n
             f"history: {history or 'Não informado'}\n"
             f"incident_id (use se chamar create_maintenance_ticket): {incident_id}"
         )
-        messages = [{"role": "user", "content": user_message}]
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
 
         # Loop agentic: o modelo pode chamar tools várias vezes antes da resposta final.
         # Limite de iterações evita loop infinito em caso de comportamento inesperado do modelo.
         for _ in range(6):
-            response = client.messages.create(
-                model="claude-sonnet-5",
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
                 max_tokens=1024,
                 temperature=0.2,
-                system=system_prompt,
-                tools=CLAUDE_TOOLS,
+                tools=GROQ_TOOLS,
+                tool_choice="auto",
                 messages=messages,
             )
 
-            if response.stop_reason == "tool_use":
-                messages.append({"role": "assistant", "content": response.content})
-                tool_results = []
-                for block in response.content:
-                    if block.type != "tool_use":
-                        continue
-                    fn = TOOL_IMPLEMENTATIONS.get(block.name)
+            message = response.choices[0].message
+
+            if message.tool_calls:
+                # Formato OpenAI-compatible: precisa serializar o próprio objeto de mensagem do
+                # assistant (com os tool_calls) de volta na conversa antes das respostas das tools.
+                messages.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                        }
+                        for tc in message.tool_calls
+                    ],
+                })
+                for tc in message.tool_calls:
+                    fn = TOOL_IMPLEMENTATIONS.get(tc.function.name)
                     try:
-                        result = fn(**block.input) if fn else {"error": f"Ferramenta desconhecida: {block.name}"}
+                        args = json.loads(tc.function.arguments or "{}")
+                        result = fn(**args) if fn else {"error": f"Ferramenta desconhecida: {tc.function.name}"}
                     except Exception as tool_err:
                         result = {"error": str(tool_err)}
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": tc.function.name,
                         "content": json.dumps(result, ensure_ascii=False),
                     })
-                messages.append({"role": "user", "content": tool_results})
                 continue
 
-            # stop_reason == "end_turn" (ou similar): extrai o JSON final da resposta em texto
-            final_text = "".join(b.text for b in response.content if b.type == "text").strip()
+            # Sem tool_calls: extrai o JSON final da resposta em texto
+            final_text = (message.content or "").strip()
             parsed = json.loads(final_text)
             required = {"diagnosis", "root_cause", "next_steps"}
             if not required.issubset(parsed.keys()):
@@ -671,9 +703,9 @@ def create_incident(incident: IncidentCreate):
     inc_id = str(uuid.uuid4())[:8].upper()
     now = datetime.now().isoformat()
 
-    # Tenta gerar o diagnóstico via Claude (com tool use); se não houver ANTHROPIC_API_KEY
+    # Tenta gerar o diagnóstico via Groq (com tool use); se não houver GROQ_API_KEY
     # configurada, ou qualquer erro ocorrer, cai automaticamente para o mock por regras.
-    claude_diag = generate_claude_diagnosis(
+    groq_diag = generate_groq_diagnosis(
         incident_id=inc_id,
         equipment_type=incident.equipment_type,
         equipment_name=incident.equipment_name,
@@ -682,10 +714,10 @@ def create_incident(incident: IncidentCreate):
         symptoms=incident.symptoms,
         history=incident.history,
     )
-    if claude_diag:
-        diag = claude_diag
-        diagnosis_source = "claude"
-        diagnosis_confidence = claude_diag.get("confidence")
+    if groq_diag:
+        diag = groq_diag
+        diagnosis_source = "groq"
+        diagnosis_confidence = groq_diag.get("confidence")
     else:
         diag = generate_mock_diagnosis(incident.equipment_type, incident.symptoms)
         diagnosis_source = "mock"

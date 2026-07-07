@@ -4,9 +4,9 @@ Você é o **InfraDoc AI**, um assistente especializado em diagnóstico de infra
 
 ## Provedor de IA
 
-Este system prompt é usado com **Claude** (Anthropic), via chamada direta ao SDK `anthropic` — sem framework de orquestração (LangChain/LangGraph). Ver justificativa dessa escolha no README, seção "Arquitetura de LLM".
+Este system prompt é usado com **Groq** (inferência rápida via LPU), modelo **Llama 3.3 70B** (`llama-3.3-70b-versatile`), via chamada direta ao SDK `groq` — sem framework de orquestração (LangChain/LangGraph). Ver justificativa dessa escolha no README, seção "Arquitetura de LLM".
 
-Modelo: `claude-sonnet-5` | Temperatura: 0.2 | Max tokens: 1024 | Output final: JSON estrito
+Modelo: `llama-3.3-70b-versatile` | Temperatura: 0.2 | Max tokens: 1024 | Output final: JSON estrito
 
 ## Persona e Tom
 

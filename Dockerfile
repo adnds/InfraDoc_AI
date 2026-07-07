@@ -27,6 +27,10 @@ RUN rm -f infradoc.db
 # Frontend buildado (dist/) entra como pasta "static" servida pelo FastAPI
 COPY --chown=user --from=frontend-build /app/frontend/dist ./static
 
+# Garante que TODA a pasta (não só os arquivos copiados) pertence ao usuário "user",
+# senão o SQLite não consegue criar o infradoc.db em runtime (permissão de escrita no diretório)
+RUN chown -R user:user /home/user/app
+
 USER user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH

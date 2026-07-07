@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, AlertTriangle, Server, PlusCircle, FileText, Activity, Users, LogOut, Shield, BookOpen, Download } from 'lucide-react'
+import { LayoutDashboard, AlertTriangle, Server, PlusCircle, FileText, Activity, Users, LogOut, Shield, BookOpen, Download, Menu, X } from 'lucide-react'
 
 const NAV = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
@@ -13,9 +14,28 @@ const NAV = [
 export default function Sidebar({ openCount = 0, user, onLogout }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  const go = (path) => {
+    navigate(path)
+    setMobileOpen(false)
+  }
 
   return (
-    <nav className="sidebar">
+    <>
+      <button
+        className="mobile-menu-toggle"
+        onClick={() => setMobileOpen(o => !o)}
+        aria-label={mobileOpen ? 'Fechar menu' : 'Abrir menu'}
+      >
+        {mobileOpen ? <X size={18} /> : <Menu size={18} />}
+      </button>
+
+      {mobileOpen && (
+        <div className="sidebar-backdrop" onClick={() => setMobileOpen(false)} />
+      )}
+
+      <nav className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
       <div className="sidebar-logo">
         <div className="logo-mark">
           <Activity size={16} />
@@ -31,7 +51,7 @@ export default function Sidebar({ openCount = 0, user, onLogout }) {
             ? location.pathname === '/'
             : location.pathname.startsWith(item.path)
           return (
-            <div key={item.path} className={`nav-item ${isActive ? 'active' : ''}`} onClick={() => navigate(item.path)}>
+            <div key={item.path} className={`nav-item ${isActive ? 'active' : ''}`} onClick={() => go(item.path)}>
               <item.icon size={15} />
               {item.label}
               {item.label === 'Incidentes' && openCount > 0 && (
@@ -46,14 +66,14 @@ export default function Sidebar({ openCount = 0, user, onLogout }) {
             <div className="nav-section-label" style={{ marginTop: 8 }}>Administração</div>
             <div
               className={`nav-item ${location.pathname === '/users' ? 'active' : ''}`}
-              onClick={() => navigate('/users')}
+              onClick={() => go('/users')}
             >
               <Users size={15} />
               Usuários
             </div>
             <div
               className={`nav-item ${location.pathname === '/export-requests' ? 'active' : ''}`}
-              onClick={() => navigate('/export-requests')}
+              onClick={() => go('/export-requests')}
             >
               <Download size={15} />
               Exportações
@@ -100,6 +120,7 @@ export default function Sidebar({ openCount = 0, user, onLogout }) {
           <span style={{ color: 'var(--accent)' }}>●</span> API online · modo mock
         </div>
       </div>
-    </nav>
+      </nav>
+    </>
   )
 }

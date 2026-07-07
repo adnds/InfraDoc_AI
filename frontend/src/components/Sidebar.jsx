@@ -11,7 +11,7 @@ const NAV = [
   { label: 'Base de Conhecimento', icon: BookOpen, path: '/kb' },
 ]
 
-export default function Sidebar({ openCount = 0, user, onLogout }) {
+export default function Sidebar({ openCount = 0, pendingUsers = 0, user, onLogout }) {
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -70,6 +70,9 @@ export default function Sidebar({ openCount = 0, user, onLogout }) {
             >
               <Users size={15} />
               Usuários
+              {pendingUsers > 0 && (
+                <span className="nav-badge">{pendingUsers}</span>
+              )}
             </div>
             <div
               className={`nav-item ${location.pathname === '/export-requests' ? 'active' : ''}`}
@@ -117,7 +120,7 @@ export default function Sidebar({ openCount = 0, user, onLogout }) {
         </button>
 
         <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 8 }}>
-          <span style={{ color: 'var(--accent)' }}>●</span> API online · modo mock
+          <span style={{ color: 'var(--accent)' }}>●</span> API online
         </div>
       </div>
       </nav>

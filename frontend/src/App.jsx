@@ -16,20 +16,24 @@ import { api } from './api'
 
 function Shell({ user, onLogout }) {
   const [openCount, setOpenCount] = useState(0)
+  const [pendingUsers, setPendingUsers] = useState(0)
 
   useEffect(() => {
     api.incidents.list({ status: 'open' }).then(data => setOpenCount(data.length)).catch(() => {})
+    if (user?.role === 'admin') {
+      api.users.list({ status: 'pending' }).then(data => setPendingUsers(data.length)).catch(() => {})
+    }
   }, [])
 
   return (
     <div className="app-shell">
-      <Sidebar openCount={openCount} user={user} onLogout={onLogout} />
+      <Sidebar openCount={openCount} pendingUsers={pendingUsers} user={user} onLogout={onLogout} />
       <main className="main-content">
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/incidents" element={<Incidents />} />
-          <Route path="/incidents/new" element={<NewIncident />} />
-          <Route path="/incidents/:id" element={<IncidentDetail />} />
+          <Route path="/incidents" element={<Incidents user={user} />} />
+          <Route path="/incidents/new" element={<NewIncident user={user} />} />
+          <Route path="/incidents/:id" element={<IncidentDetail user={user} />} />
           <Route path="/assets" element={<Assets />} />
           <Route path="/reports" element={<Reports user={user} />} />
           <Route path="/users" element={<Users user={user} />} />

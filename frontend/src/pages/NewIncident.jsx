@@ -31,7 +31,7 @@ const SYMPTOM_SUGGESTIONS = {
   ups: ['Bateria baixa', 'Alarme de sobrecarga', 'Autonomia reduzida', 'Falha de bypass'],
 }
 
-export default function NewIncident() {
+export default function NewIncident({ user }) {
   const navigate = useNavigate()
   const toast = useToast()
   const [loading, setLoading] = useState(false)
@@ -52,8 +52,16 @@ export default function NewIncident() {
     if (!isValid) return
     setLoading(true)
     try {
-      const inc = await api.incidents.create(form)
-      toast('Incidente registrado com diagnóstico gerado!', 'success')
+      const inc = await api.incidents.create({
+        ...form,
+        created_by: user?.username,
+        creator_role: user?.role
+      })
+      if (inc.approval_status === 'pending') {
+        toast('Incidente registrado! Ele ficará visível assim que um administrador aprovar.', 'info')
+      } else {
+        toast('Incidente registrado com diagnóstico gerado!', 'success')
+      }
       navigate(`/incidents/${inc.id}`)
     } catch (e) {
       toast('Erro ao criar incidente.', 'error')

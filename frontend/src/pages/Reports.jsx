@@ -141,7 +141,7 @@ SINTOMAS REPORTADOS
 ${inc.symptoms}
 
 ${inc.history ? `HISTÓRICO / CONTEXTO\n${inc.history}\n` : ''}
-DIAGNÓSTICO IA (modo mock)
+DIAGNÓSTICO IA (${inc.diagnosis_source === 'claude' ? `Claude${inc.diagnosis_confidence ? ' · confiança ' + inc.diagnosis_confidence : ''}` : 'modo mock'})
 ${inc.diagnosis || 'N/A'}
 
 CAUSA RAIZ PROVÁVEL

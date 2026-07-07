@@ -12,13 +12,13 @@ pinned: false
 
 **Sistema inteligente de diagnóstico e documentação de incidentes de infraestrutura de TI**
 
-> Avaliações Intermediária e Final — IA Generativa | Stack: FastAPI + React + SQLite + Groq LLaMA 3
+> Avaliações Intermediária e Final — IA Generativa | Stack: FastAPI + React + SQLite + Claude (Anthropic)
 
 ---
 
 ## O que o sistema faz
 
-InfraDoc AI é uma plataforma para técnicos e engenheiros de datacenter registrarem, diagnosticarem e acompanharem incidentes de infraestrutura. O técnico descreve o problema (rack afetado, equipamento, sintomas, histórico), e o sistema gera automaticamente um diagnóstico estruturado com causa raiz provável e próximos passos recomendados — via **Groq LLaMA 3-70B** (gratuito) ou modo mock quando sem chave configurada.
+InfraDoc AI é uma plataforma para técnicos e engenheiros de datacenter registrarem, diagnosticarem e acompanharem incidentes de infraestrutura. O técnico descreve o problema (rack afetado, equipamento, sintomas, histórico), e o sistema gera automaticamente um diagnóstico estruturado com causa raiz provável e próximos passos recomendados — via **Claude (Anthropic)** com tool use, ou modo mock por regras estáticas quando a variável `ANTHROPIC_API_KEY` não está configurada.
 
 **Telas implementadas:**
 - **Login / Criar Conta** — autenticação com e-mail obrigatório, senha, recuperação simulada
@@ -41,9 +41,9 @@ infradoc-ai/
 ├── README.md
 ├── .gitignore
 ├── backend/
-│   ├── main.py               # FastAPI — rotas, diagnóstico Groq/mock, SQLite
-│   ├── requirements.txt      # fastapi, uvicorn, pydantic, groq, python-dotenv
-│   └── .env                  # NÃO subir no GitHub — contém GROQ_API_KEY
+│   ├── main.py               # FastAPI — rotas, diagnóstico Claude (tool use) + fallback mock, SQLite
+│   ├── requirements.txt      # fastapi, uvicorn, pydantic, anthropic
+│   └── .env                  # NÃO subir no GitHub — contém ANTHROPIC_API_KEY (uso local; no HF Spaces isso é uma Secret)
 ├── frontend/
 │   ├── index.html
 │   ├── vite.config.js
@@ -77,17 +77,17 @@ infradoc-ai/
 
 ## Como rodar localmente
 
-### 1. Configurar a chave da IA (Groq)
+### 1. Configurar a chave da IA (Claude / Anthropic)
 
-Crie o arquivo `backend/.env` com:
+Crie o arquivo `backend/.env` (ou exporte a variável de ambiente diretamente) com:
 
 ```
-GROQ_API_KEY=gsk_sua_chave_aqui
+ANTHROPIC_API_KEY=sk-ant-sua_chave_aqui
 ```
 
-Obtenha sua chave gratuita em: https://console.groq.com
+Obtenha sua chave em: https://console.anthropic.com
 
-> Sem a chave, o sistema roda em **modo mock** com diagnósticos por regras estáticas.
+> Sem a chave, o sistema roda em **modo mock** com diagnósticos por regras estáticas — o app funciona normalmente de qualquer forma, apenas sem tool use real.
 
 ### 2. Backend
 
@@ -158,26 +158,84 @@ O free tier do Hugging Face Spaces **não tem armazenamento persistente por padr
 
 ---
 
-## Integração com IA — Groq LLaMA 3
+## Integração com IA — Claude (Anthropic)
 
-O sistema usa o **Groq** como provedor de IA com o modelo `llama3-70b-8192` — gratuito e sem necessidade de cartão de crédito.
+### Arquitetura de LLM (fluxo)
 
-### Por que Groq e não Claude/OpenAI?
-- **Gratuito** — sem custo para desenvolvimento e avaliação
-- **Rápido** — Groq usa hardware especializado (LPU), respostas em menos de 1 segundo
-- **LLaMA 3-70B** — modelo open-source de alta qualidade, adequado para diagnóstico técnico
+```
+Técnico preenche formulário de incidente
+        │
+        ▼
+POST /api/incidents  (main.py)
+        │
+        ▼
+generate_claude_diagnosis()
+        │
+        ├─ ANTHROPIC_API_KEY ausente/erro? ──► generate_mock_diagnosis() (regras estáticas)
+        │
+        ▼ (chave presente)
+client.messages.create(system=system_prompt, tools=[4 tools], messages=[...])
+        │
+        ▼
+stop_reason == "tool_use"?
+   │                    │
+  sim                  não
+   │                    │
+   ▼                    ▼
+executa a tool      parseia JSON final
+localmente          (diagnosis, root_cause,
+(SQLite) e           next_steps, confidence)
+devolve tool_result       │
+   │                      ▼
+   └──────────────► incidente salvo com
+     (loop, até 6x)   diagnosis_source='claude'
+```
+
+Cada incidente grava também `diagnosis_source` (`claude` ou `mock`) e, quando aplicável, `diagnosis_confidence` — isso permite ao frontend mostrar de forma honesta qual diagnóstico veio de fato do modelo e qual veio do fallback, em vez de uma tag fixa de "modo mock".
+
+### Por que Claude e não outro provedor?
+
+- **Tool calling maduro e bem documentado** — as 4 ferramentas do projeto (ver `tools/tools.md`) dependem de um loop de tool use confiável; a API da Anthropic tem esse fluxo como cidadão de primeira classe (`stop_reason: "tool_use"`, blocos `tool_use`/`tool_result` tipados).
+- **Instruction following em system prompts longos** — o `prompts/system_prompt.txt` tem regras detalhadas, few-shot examples e um formato de saída estrito (JSON); Claude segue esse tipo de instrução estruturada de forma consistente.
+- **Trade-off assumido**: é uma API paga (diferente da tentativa inicial com Groq gratuito). Para este projeto acadêmico, isso significa custo por chamada, mas o ganho em confiabilidade do tool use e do formato de saída compensou — principalmente porque o Groq/LLaMA 3 já tinha causado JSON quebrado em testes anteriores (ver "O que não funcionou" abaixo).
+- **Se fosse trocar por um modelo local** (Ollama/vLLM): perderia parte da confiabilidade do tool calling — modelos abertos menores tendem a "esquecer" o formato JSON depois de uma ou duas chamadas de ferramenta, exigindo mais parsing defensivo e possivelmente um parser de tool-call próprio em vez do suporte nativo da API.
+
+### Framework: chamada direta ao SDK, sem LangChain/LangGraph
+
+Escolha deliberada por **chamar o SDK `anthropic` diretamente**, sem framework de orquestração:
+
+- Apenas 4 tools e um loop de no máximo 6 iterações — não há necessidade de grafo de estados, memória de longo prazo entre sessões, nem múltiplos agentes especializados, que é onde LangGraph justificaria sua complexidade adicional.
+- Chamada direta deixa o comportamento do loop (quando parar, como tratar erro de tool, como validar o JSON final) totalmente explícito e visível em `generate_claude_diagnosis()`, o que facilita depuração e é mais fácil de explicar/justificar numa apresentação de 3 minutos.
+- Trade-off: se o projeto crescesse para múltiplas etapas de raciocínio encadeadas ou precisasse de retomada de estado entre requisições HTTP (o que não é o caso aqui — cada incidente é uma chamada isolada e sem estado), um framework como LangGraph passaria a valer a complexidade.
+
+### Ferramentas (tools) — ver `tools/tools.md` para a justificativa completa de cada uma
+
+| Tool | O que faz | Já existia no schema? |
+|---|---|---|
+| `get_rack_inventory` | Lista os equipamentos do mesmo rack | Sim (tabela `assets`) |
+| `get_incident_history` | Busca incidentes anteriores do mesmo equipamento/rack | Sim (tabela `incidents`, filtrando por `approval_status='approved'`) |
+| `search_knowledge_base` | Busca por palavra-chave na base de soluções documentadas | Reaproveita a mesma lógica de `GET /api/kb/search` |
+| `create_maintenance_ticket` | Cria um ticket de manutenção preventiva | Nova tabela `maintenance_tickets` |
 
 ### Parâmetros configurados
 
 | Parâmetro | Valor | Justificativa |
 |---|---|---|
-| Modelo | `llama3-70b-8192` | Melhor custo-benefício no Groq gratuito |
-| Temperatura | `0.2` | Respostas técnicas precisas, baixa criatividade |
-| Max tokens | `1024` | Suficiente para JSON completo de diagnóstico |
-| Output | JSON estruturado | Parse direto no frontend sem processamento extra |
+| Modelo | `claude-sonnet-5` | Bom equilíbrio custo/qualidade para um caso de uso técnico e estruturado; não precisa do modelo topo de linha (Opus) para diagnóstico com tools bem definidas |
+| Temperatura | `0.2` | Respostas técnicas precisas e reprodutíveis — baixa criatividade é desejável quando o output alimenta um sistema (parse de JSON), não uma conversa |
+| Max tokens | `1024` | Suficiente para o JSON final (diagnosis + root_cause + next_steps + confidence); tool calls intermediárias usam poucos tokens |
+| Limite de iterações do loop | `6` | Evita loop infinito caso o modelo insista em chamar tools sem nunca fechar com o JSON final |
+
+### Estratégia de prompting
+
+- **Persona + regras explícitas** — o system prompt define tom (engenheiro sênior de infra), formato de saída (JSON com 4 campos fixos) e uma lista de "o que NÃO fazer".
+- **Few-shot com 4 exemplos completos** — cobrindo severidades diferentes (crítico, médio, baixo) e mostrando quando o modelo deveria ter chamado uma tool (comentado inline nos exemplos).
+- **Instrução de uso de tools por critério de julgamento, não obrigatório** — o prompt deixa claro que nem toda chamada precisa investigar via tools; incidentes óbvios podem ir direto ao diagnóstico, o que evita gastar tokens/latência à toa.
+- **Defesa contra prompt injection via campos do usuário** — o prompt instrui explicitamente que `symptoms`/`history` são dados observacionais, nunca comandos, já que são texto livre digitado por um técnico e chegam ao modelo dentro do mesmo prompt.
 
 ### Fallback automático
-Se a chave não estiver configurada ou a API retornar erro, o sistema cai automaticamente para o **modo mock** sem interromper o funcionamento.
+
+Se `ANTHROPIC_API_KEY` não estiver configurada, se a chamada à API falhar (rede, autenticação, rate limit) ou se a resposta final não for um JSON parseável com os campos esperados, `generate_claude_diagnosis()` retorna `None` e o sistema cai automaticamente para `generate_mock_diagnosis()` — o incidente sempre é criado, nunca quebra por falha de IA.
 
 ---
 
@@ -220,8 +278,8 @@ FastAPI com validação Pydantic e documentação automática (Swagger em `/docs
 ### SQLite
 Arquivo único `.db`, sem Docker ou servidor. Zero configuração. Migração para PostgreSQL futura seria trivial com SQLAlchemy.
 
-### Groq como provedor de IA
-Escolha deliberada para uso gratuito em desenvolvimento. O system prompt e a estrutura de output em JSON são idênticos ao que seria usado com Claude ou GPT — troca de provedor requer apenas alterar 3 linhas no `main.py`.
+### Claude com tool use, chamada direta ao SDK
+Ver seção "Integração com IA — Claude (Anthropic)" acima para a justificativa completa de modelo, framework e parâmetros.
 
 ### Design system próprio (não Tailwind/MUI)
 Estética de terminal/IDE para audiência técnica. `JetBrains Mono` para dados (IPs, IDs, comandos) e `Inter` para UI criam hierarquia visual clara.
@@ -237,9 +295,9 @@ Decisão deliberada para manter o projeto sem backend de autenticação complexo
 Prompt: *"Crie a estrutura de um projeto FastAPI + React + SQLite para um sistema de gerenciamento de incidentes de TI"*
 → Gerou `main.py` com modelos Pydantic, rotas REST, CORS e seed de dados funcional de primeira.
 
-**2. Integração com Groq**
-Prompt: *"Integre o Groq com LLaMA 3-70B no endpoint de criação de incidente, com fallback automático para mock se a chave não estiver configurada"*
-→ Gerou a função `generate_groq_diagnosis()` com tratamento de erro e fallback corretamente.
+**2. Integração com Claude (tool use)**
+Prompt: *"Implemente o diagnóstico via API da Claude com as 4 tools definidas em tools.md, usando tool use nativo do SDK anthropic, com loop agentic e fallback automático para mock em caso de erro"*
+→ Gerou `generate_claude_diagnosis()` com o loop de tool use, as 4 implementações de tool e o tratamento de erro/fallback corretamente na primeira tentativa. O ponto que precisou de atenção manual foi garantir que o `INSERT` na tabela `incidents` passasse a usar nomes de coluna explícitos (em vez de `VALUES (?,?,?...)` posicional) depois de adicionar as colunas novas (`diagnosis_source`, `diagnosis_confidence`) — sem isso, o insert quebrava com "table incidents has N columns but M values were supplied".
 
 **3. Fluxo de aprovação de exportações**
 Prompt: *"Implemente fluxo onde técnico solicita exportação com motivo obrigatório e admin aprova ou nega"*
@@ -273,7 +331,8 @@ SendGrid introduziu dependências desnecessárias. Substituído por simulação 
 **5. Schema duplicado**
 Tabela `export_requests` foi criada duas vezes no `init_db` na primeira geração. Corrigido manualmente.
 
-**6. JSON quebrado com temperatura alta**
-Com temperatura `0.7`, o LLaMA 3 adicionava texto fora do JSON quebrando o parse. Resolvido com temperatura `0.2` e instrução explícita no system prompt.
+**6. JSON quebrado com temperatura alta (ainda na fase Groq/LLaMA 3)**
+Com temperatura `0.7`, o LLaMA 3 adicionava texto fora do JSON quebrando o parse. Esse e outros problemas de confiabilidade do tool calling em modelos abertos menores foram o motivo principal da troca de provedor para Claude — mantive a temperatura baixa (`0.2`) na migração, mas o ganho real veio do tool use nativo da API da Anthropic, mais consistente em manter o formato JSON mesmo depois de várias chamadas de ferramenta.
 
----# InfraDoc-AI-v1.0-Resid-ncia-IA-Generativa
+**7. Validação ao vivo da integração Claude — pendente**
+O ambiente onde este código foi desenvolvido com o agente de codificação não tinha acesso à internet, então o loop de tool use foi escrito e revisado contra a documentação oficial da API, mas **ainda não foi testado ponta a ponta com uma chamada real**. Antes da apresentação final, é necessário: (1) configurar `ANTHROPIC_API_KEY` como Secret no Space, (2) criar pelo menos um incidente de cada severidade e confirmar que `diagnosis_source` vem `"claude"` na resposta, e (3) verificar nos logs se alguma tool foi de fato chamada pelo modelo. Se algo quebrar nesse teste, documentar aqui o que precisou de ajuste.

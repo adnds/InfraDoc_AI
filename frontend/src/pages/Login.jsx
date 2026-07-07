@@ -1,17 +1,6 @@
 import { useState } from 'react'
 import { Activity, Lock, User, Eye, EyeOff, Mail, ArrowLeft, CheckCircle } from 'lucide-react'
-
-const STORAGE_KEY = 'infradoc_users'
-
-function getUsers() {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (raw) return JSON.parse(raw)
-  const defaults = [
-    { id: 1, name: 'Administrador', username: 'admin', email: 'admin@infradoc.ai', password: 'admin123', role: 'admin', createdAt: new Date().toISOString() }
-  ]
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults))
-  return defaults
-}
+import { api } from '../api'
 
 const BG = {
   minHeight: '100vh', background: 'var(--bg-base)',
@@ -41,45 +30,38 @@ export default function Login({ onLogin }) {
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState('')
 
-  const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setError(''); setSuccess('') }
+  const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setError('') ; setSuccess('')}
   const reset = (m) => { setMode(m); setError(''); setSuccess(''); setForm({ name: '', username: '', email: '', password: '', confirm: '' }) }
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!form.username || !form.password) { setError('Preencha usuário e senha.'); return }
     setLoading(true)
-    setTimeout(() => {
-      const users = getUsers()
-      const found = users.find(u => u.username === form.username && u.password === form.password)
-      if (found) {
-        onLogin({ id: found.id, name: found.name, username: found.username, email: found.email, role: found.role })
-      } else {
-        setError('Usuário ou senha incorretos.')
-        setLoading(false)
-      }
-    }, 700)
+    setError('')
+    try {
+      const found = await api.auth.login({ username: form.username, password: form.password })
+      onLogin(found)
+    } catch (e) {
+      setError(e.message || 'Usuário ou senha incorretos.')
+      setLoading(false)
+    }
   }
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
     if (!form.name || !form.username || !form.email || !form.password || !form.confirm) { setError('Preencha todos os campos.'); return }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
     if (!emailRegex.test(form.email)) { setError('E-mail inválido.'); return }
     if (form.password !== form.confirm) { setError('As senhas não coincidem.'); return }
     if (form.password.length < 6) { setError('Senha deve ter pelo menos 6 caracteres.'); return }
-    const users = getUsers()
-    if (users.find(u => u.username === form.username)) { setError('Nome de usuário já existe.'); return }
-    if (users.find(u => u.email === form.email)) { setError('E-mail já cadastrado.'); return }
     setLoading(true)
-    setTimeout(() => {
-      const newUser = {
-        id: Date.now(), name: form.name, username: form.username,
-        email: form.email, password: form.password,
-        role: 'technician', createdAt: new Date().toISOString()
-      }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...users, newUser]))
-      setSuccess('Conta criada! Um e-mail de confirmação foi enviado para ' + form.email)
+    try {
+      await api.auth.register({ name: form.name, username: form.username, email: form.email, password: form.password })
+      setSuccess('Conta criada! Sua solicitação foi enviada para um administrador — você poderá entrar assim que ela for aprovada.')
       setMode('login')
       setLoading(false)
-    }, 900)
+    } catch (e) {
+      setError(e.message || 'Não foi possível criar a conta.')
+      setLoading(false)
+    }
   }
 
   const handleForgot = () => {
@@ -137,7 +119,7 @@ export default function Login({ onLogin }) {
                 {form.email}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-elevated)', borderRadius: 6, padding: '8px 12px', marginBottom: 24 }}>
-                ⚠️ Modo mock — nenhum e-mail foi enviado de verdade. Na versão com backend real, o e-mail seria disparado via SendGrid.
+                ⚠️ Modo mock — nenhum e-mail foi enviado de verdade. Fale com um administrador pra redefinir sua senha.
               </div>
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => reset('login')}>
                 Voltar para o login
@@ -181,7 +163,7 @@ export default function Login({ onLogin }) {
                 ))}
               </div>
 
-              {success && <div style={{ background: 'var(--green-dim)', border: '1px solid rgba(63,185,80,0.3)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--green)', marginBottom: 16 }}>{success}</div>}
+              {success && <div style={{ background: 'var(--green-dim)', border: '1px solid rgba(63,185,80,0.3)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--green)', marginBottom: 16, lineHeight: 1.5 }}>{success}</div>}
 
               {/* Nome — só no cadastro */}
               {mode === 'register' && (
@@ -234,6 +216,12 @@ export default function Login({ onLogin }) {
                     <FieldIcon icon={Lock} />
                     <input className="form-control" style={{ paddingLeft: 32 }} type="password" placeholder="••••••••" value={form.confirm} onChange={e => set('confirm', e.target.value)} onKeyDown={handleKey} />
                   </InputWrap>
+                </div>
+              )}
+
+              {mode === 'register' && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-elevated)', borderRadius: 6, padding: '8px 12px', marginBottom: 16, lineHeight: 1.5 }}>
+                  ℹ️ Sua conta ficará pendente até que um administrador aprove o acesso.
                 </div>
               )}
 

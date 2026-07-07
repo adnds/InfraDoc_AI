@@ -7,6 +7,8 @@ from typing import Optional, List
 import sqlite3
 import json
 import os
+import hashlib
+import secrets
 from datetime import datetime
 import uuid
 
@@ -26,6 +28,26 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+def hash_password(password: str, salt: Optional[str] = None) -> str:
+    """Gera um hash salgado da senha. Formato armazenado: 'salt$hash'."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.sha256((salt + password).encode()).hexdigest()
+    return f"{salt}${digest}"
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, digest = stored.split("$", 1)
+    except (ValueError, AttributeError):
+        return False
+    return hashlib.sha256((salt + password).encode()).hexdigest() == digest
+
+def ensure_column(conn, table: str, column: str, coldef: str):
+    """Adiciona uma coluna à tabela se ela ainda não existir (migração leve pra bancos já existentes)."""
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
+
 def init_db():
     conn = get_db()
     conn.executescript("""
@@ -42,6 +64,21 @@ def init_db():
             diagnosis TEXT,
             root_cause TEXT,
             next_steps TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            approval_status TEXT DEFAULT 'pending',
+            created_by TEXT,
+            reviewed_by TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'technician',
+            status TEXT DEFAULT 'pending',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -84,6 +121,18 @@ def init_db():
             helpful INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS maintenance_tickets (
+            id TEXT PRIMARY KEY,
+            incident_id TEXT NOT NULL,
+            equipment_name TEXT NOT NULL,
+            action_required TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            estimated_duration TEXT,
+            status TEXT DEFAULT 'open',
+            created_by TEXT DEFAULT 'claude-ai',
+            created_at TEXT NOT NULL
         );
     """)
     # Seed some assets
@@ -141,6 +190,26 @@ def init_db():
             kb_entries
         )
         conn.commit()
+
+    # Migração leve: garante colunas novas em bancos já existentes (dev local)
+    ensure_column(conn, "incidents", "approval_status", "TEXT DEFAULT 'approved'")
+    ensure_column(conn, "incidents", "created_by", "TEXT")
+    ensure_column(conn, "incidents", "reviewed_by", "TEXT")
+    ensure_column(conn, "incidents", "diagnosis_source", "TEXT DEFAULT 'mock'")
+    ensure_column(conn, "incidents", "diagnosis_confidence", "TEXT")
+    conn.commit()
+
+    # Seed do usuário admin padrão
+    users_existing = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if users_existing == 0:
+        now = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)",
+            ("user-admin", "Administrador", "admin", "admin@infradoc.ai",
+             hash_password("admin123"), "admin", "approved", now, now)
+        )
+        conn.commit()
+
     conn.close()
 
 init_db()
@@ -155,12 +224,18 @@ class IncidentCreate(BaseModel):
     severity: str
     symptoms: str
     history: Optional[str] = None
+    created_by: Optional[str] = None
+    creator_role: Optional[str] = None
 
 class IncidentUpdate(BaseModel):
     status: Optional[str] = None
     diagnosis: Optional[str] = None
     root_cause: Optional[str] = None
     next_steps: Optional[str] = None
+
+class IncidentApproval(BaseModel):
+    status: str  # 'approved' | 'rejected'
+    reviewed_by: str
 
 class AssetCreate(BaseModel):
     name: str
@@ -196,6 +271,33 @@ class ExportRequestReview(BaseModel):
     status: str  # 'approved' | 'rejected'
     reviewed_by: str
     review_note: Optional[str] = None
+
+class UserRegister(BaseModel):
+    name: str
+    username: str
+    email: str
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class UserCreateByAdmin(BaseModel):
+    name: str
+    username: str
+    email: str
+    password: str
+    role: str = "technician"
+
+class UserApproval(BaseModel):
+    status: str  # 'approved' | 'rejected'
+    reviewed_by: Optional[str] = None
+
+class UserRoleUpdate(BaseModel):
+    role: str
+
+class UserPasswordReset(BaseModel):
+    password: str
 
 # --- Mock AI Diagnosis ---
 
@@ -271,16 +373,213 @@ def generate_mock_diagnosis(equipment_type: str, symptoms: str) -> dict:
         "next_steps": "1. Coletar mais informações\n2. Verificar logs\n3. Escalar para nível 2"
     })
 
-class ExportRequestCreate(BaseModel):
-    incident_id: str
-    incident_title: str
-    requested_by: str
-    reason: str
+# --- Diagnóstico via Claude (tool use) ---
+# Documentação completa das ferramentas e do system prompt em tools/tools.md e prompts/system_prompt.txt
 
-class ExportRequestReview(BaseModel):
-    status: str  # 'approved' | 'rejected'
-    reviewed_by: str
-    review_note: Optional[str] = None
+def _tool_get_rack_inventory(rack_id: str) -> dict:
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT name, type, ip, status, notes FROM assets WHERE rack=?",
+        (rack_id,)
+    ).fetchall()
+    conn.close()
+    return {
+        "rack": rack_id,
+        "assets": [{"name": r[0], "type": r[1], "ip": r[2], "status": r[3], "notes": r[4]} for r in rows]
+    }
+
+def _tool_get_incident_history(equipment_name: Optional[str] = None, rack_id: Optional[str] = None, limit: int = 5) -> dict:
+    conn = get_db()
+    query = "SELECT id, title, equipment_name, rack, severity, status, root_cause, created_at FROM incidents WHERE approval_status='approved'"
+    params = []
+    if equipment_name:
+        query += " AND equipment_name=?"
+        params.append(equipment_name)
+    elif rack_id:
+        query += " AND rack=?"
+        params.append(rack_id)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit or 5)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return {"incidents": [dict(r) for r in rows]}
+
+def _tool_search_knowledge_base(query: str, equipment_type: Optional[str] = None) -> dict:
+    conn = get_db()
+    if equipment_type:
+        rows = conn.execute("SELECT * FROM knowledge_base WHERE equipment_type=?", (equipment_type,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM knowledge_base").fetchall()
+    conn.close()
+    words = [w.strip().lower() for w in query.replace(',', ' ').split() if len(w.strip()) > 3]
+    results = []
+    for row in rows:
+        r = dict(row)
+        kw = r['keywords'].lower()
+        score = sum(1 for w in words if w in kw or w in r['symptoms'].lower())
+        if score > 0:
+            results.append({**r, 'score': score})
+    results.sort(key=lambda x: x['score'], reverse=True)
+    return {"results": results[:3]}
+
+def _tool_create_maintenance_ticket(incident_id: str, equipment_name: str, action_required: str,
+                                     priority: str, estimated_duration: Optional[str] = None) -> dict:
+    conn = get_db()
+    ticket_id = "mnt-" + str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO maintenance_tickets (id, incident_id, equipment_name, action_required, priority, estimated_duration, status, created_by, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (ticket_id, incident_id, equipment_name, action_required, priority, estimated_duration, "open", "claude-ai", now)
+    )
+    conn.commit()
+    conn.close()
+    return {"ticket_id": ticket_id, "status": "created"}
+
+CLAUDE_TOOLS = [
+    {
+        "name": "get_rack_inventory",
+        "description": "Retorna o inventário completo de um rack específico, incluindo todos os equipamentos, seus IPs, status atual e posição. Use quando precisar entender o contexto de equipamentos vizinhos ao afetado, ou verificar se outros equipamentos do mesmo rack estão com problema.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rack_id": {"type": "string", "description": "Identificador do rack (ex: 'A1', 'B3', 'DC-Externo')"}
+            },
+            "required": ["rack_id"]
+        }
+    },
+    {
+        "name": "get_incident_history",
+        "description": "Retorna o histórico de incidentes anteriores de um equipamento ou rack. Use para identificar padrões de falha recorrente, verificar se o problema já ocorreu antes e o que resolveu, e correlacionar com mudanças recentes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "equipment_name": {"type": "string", "description": "Nome exato do equipamento (ex: 'SRV-APP-01'). Opcional se rack_id for fornecido."},
+                "rack_id": {"type": "string", "description": "ID do rack para buscar todos os incidentes do rack. Opcional se equipment_name for fornecido."},
+                "limit": {"type": "integer", "description": "Número máximo de incidentes a retornar. Padrão: 5.", "default": 5}
+            }
+        }
+    },
+    {
+        "name": "search_knowledge_base",
+        "description": "Busca na base de conhecimento interno soluções para problemas conhecidos, runbooks e procedimentos padrão. Use quando o diagnóstico indicar um problema com solução documentada (ex: 'servidor lento', 'loop de rede', 'bateria degradada').",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Descrição do problema a buscar (ex: 'servidor reiniciando memória RAM', 'switch loop spanning tree')"},
+                "equipment_type": {"type": "string", "enum": ["server", "switch", "firewall", "pdu", "ups", "storage", "router"], "description": "Tipo de equipamento para filtrar resultados"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "create_maintenance_ticket",
+        "description": "Cria automaticamente um ticket de manutenção programada quando o diagnóstico identificar ação preventiva necessária (ex: substituição de bateria, atualização de firmware, substituição de hardware). Use apenas quando o diagnóstico tiver confidence 'high'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "incident_id": {"type": "string", "description": "ID do incidente que originou a necessidade de manutenção"},
+                "equipment_name": {"type": "string", "description": "Nome do equipamento que precisa de manutenção"},
+                "action_required": {"type": "string", "description": "Ação de manutenção necessária (ex: 'Substituição de bateria do no-break')"},
+                "priority": {"type": "string", "enum": ["urgent", "high", "normal", "low"], "description": "Prioridade baseada no impacto do não-atendimento"},
+                "estimated_duration": {"type": "string", "description": "Duração estimada da manutenção (ex: '2 horas')"}
+            },
+            "required": ["incident_id", "equipment_name", "action_required", "priority"]
+        }
+    },
+]
+
+TOOL_IMPLEMENTATIONS = {
+    "get_rack_inventory": _tool_get_rack_inventory,
+    "get_incident_history": _tool_get_incident_history,
+    "search_knowledge_base": _tool_search_knowledge_base,
+    "create_maintenance_ticket": _tool_create_maintenance_ticket,
+}
+
+_SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prompts", "system_prompt.txt")
+
+def _load_system_prompt() -> str:
+    try:
+        with open(_SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        # Fallback mínimo caso o arquivo não esteja presente no deploy (ex: não copiado pro container)
+        return (
+            "Você é o InfraDoc AI, especialista em diagnóstico de infraestrutura de TI. "
+            "Responda SOMENTE em JSON com os campos diagnosis, root_cause, next_steps e confidence."
+        )
+
+def generate_claude_diagnosis(incident_id: str, equipment_type: str, equipment_name: str, rack: str,
+                               severity: str, symptoms: str, history: Optional[str]) -> Optional[dict]:
+    """Gera o diagnóstico chamando a API da Claude com tool use. Retorna None em qualquer falha
+    (sem API key, erro de rede, JSON inválido, etc.) para acionar o fallback de mock."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        import anthropic
+    except ImportError:
+        return None
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        system_prompt = _load_system_prompt()
+
+        user_message = (
+            f"equipment_type: {equipment_type}\n"
+            f"equipment_name: {equipment_name}\n"
+            f"rack: {rack}\n"
+            f"severity: {severity}\n"
+            f"symptoms: {symptoms}\n"
+            f"history: {history or 'Não informado'}\n"
+            f"incident_id (use se chamar create_maintenance_ticket): {incident_id}"
+        )
+        messages = [{"role": "user", "content": user_message}]
+
+        # Loop agentic: o modelo pode chamar tools várias vezes antes da resposta final.
+        # Limite de iterações evita loop infinito em caso de comportamento inesperado do modelo.
+        for _ in range(6):
+            response = client.messages.create(
+                model="claude-sonnet-5",
+                max_tokens=1024,
+                temperature=0.2,
+                system=system_prompt,
+                tools=CLAUDE_TOOLS,
+                messages=messages,
+            )
+
+            if response.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results = []
+                for block in response.content:
+                    if block.type != "tool_use":
+                        continue
+                    fn = TOOL_IMPLEMENTATIONS.get(block.name)
+                    try:
+                        result = fn(**block.input) if fn else {"error": f"Ferramenta desconhecida: {block.name}"}
+                    except Exception as tool_err:
+                        result = {"error": str(tool_err)}
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    })
+                messages.append({"role": "user", "content": tool_results})
+                continue
+
+            # stop_reason == "end_turn" (ou similar): extrai o JSON final da resposta em texto
+            final_text = "".join(b.text for b in response.content if b.type == "text").strip()
+            parsed = json.loads(final_text)
+            required = {"diagnosis", "root_cause", "next_steps"}
+            if not required.issubset(parsed.keys()):
+                return None
+            return parsed
+
+        return None  # excedeu o limite de iterações sem resposta final
+    except Exception:
+        # Qualquer erro (rede, autenticação, JSON inválido, etc.) cai pro mock — nunca quebra a criação do incidente
+        return None
 
 # --- Routes ---
 
@@ -291,24 +590,26 @@ def health():
 @app.get("/api/stats")
 def get_stats():
     conn = get_db()
-    total = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
-    open_inc = conn.execute("SELECT COUNT(*) FROM incidents WHERE status='open'").fetchone()[0]
-    resolved = conn.execute("SELECT COUNT(*) FROM incidents WHERE status='resolved'").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM incidents WHERE approval_status='approved'").fetchone()[0]
+    open_inc = conn.execute("SELECT COUNT(*) FROM incidents WHERE status='open' AND approval_status='approved'").fetchone()[0]
+    resolved = conn.execute("SELECT COUNT(*) FROM incidents WHERE status='resolved' AND approval_status='approved'").fetchone()[0]
+    pending_approval = conn.execute("SELECT COUNT(*) FROM incidents WHERE approval_status='pending'").fetchone()[0]
     assets = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     degraded = conn.execute("SELECT COUNT(*) FROM assets WHERE status IN ('degraded', 'monitoring')").fetchone()[0]
     
     by_severity = conn.execute("""
-        SELECT severity, COUNT(*) as count FROM incidents WHERE status='open'
+        SELECT severity, COUNT(*) as count FROM incidents WHERE status='open' AND approval_status='approved'
         GROUP BY severity
     """).fetchall()
     
     by_rack = conn.execute("""
-        SELECT rack, COUNT(*) as count FROM incidents
+        SELECT rack, COUNT(*) as count FROM incidents WHERE approval_status='approved'
         GROUP BY rack ORDER BY count DESC LIMIT 5
     """).fetchall()
     
     recent = conn.execute("""
         SELECT id, title, severity, status, created_at FROM incidents
+        WHERE approval_status='approved'
         ORDER BY created_at DESC LIMIT 5
     """).fetchall()
     
@@ -317,6 +618,7 @@ def get_stats():
         "total_incidents": total,
         "open_incidents": open_inc,
         "resolved_incidents": resolved,
+        "pending_approval_incidents": pending_approval,
         "total_assets": assets,
         "degraded_assets": degraded,
         "by_severity": [dict(r) for r in by_severity],
@@ -325,7 +627,8 @@ def get_stats():
     }
 
 @app.get("/api/incidents")
-def list_incidents(status: Optional[str] = None, rack: Optional[str] = None):
+def list_incidents(status: Optional[str] = None, rack: Optional[str] = None,
+                    approval_status: Optional[str] = None, created_by: Optional[str] = None):
     conn = get_db()
     query = "SELECT * FROM incidents WHERE 1=1"
     params = []
@@ -335,6 +638,21 @@ def list_incidents(status: Optional[str] = None, rack: Optional[str] = None):
     if rack:
         query += " AND rack=?"
         params.append(rack)
+    if created_by:
+        query += " AND created_by=?"
+        params.append(created_by)
+
+    if approval_status and approval_status != "all":
+        query += " AND approval_status=?"
+        params.append(approval_status)
+    elif approval_status == "all":
+        pass  # sem filtro de aprovação — usado pela fila de administração
+    elif not created_by:
+        # Listagem geral (dashboard, lista padrão): só mostra incidentes já aprovados
+        query += " AND approval_status='approved'"
+    # Se só created_by foi passado (sem approval_status), mostra todos os status
+    # de aprovação daquele usuário, pra ele acompanhar o próprio incidente pendente.
+
     query += " ORDER BY created_at DESC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -352,17 +670,44 @@ def create_incident(incident: IncidentCreate):
     conn = get_db()
     inc_id = str(uuid.uuid4())[:8].upper()
     now = datetime.now().isoformat()
-    
-    diag = generate_mock_diagnosis(incident.equipment_type, incident.symptoms)
-    
+
+    # Tenta gerar o diagnóstico via Claude (com tool use); se não houver ANTHROPIC_API_KEY
+    # configurada, ou qualquer erro ocorrer, cai automaticamente para o mock por regras.
+    claude_diag = generate_claude_diagnosis(
+        incident_id=inc_id,
+        equipment_type=incident.equipment_type,
+        equipment_name=incident.equipment_name,
+        rack=incident.rack,
+        severity=incident.severity,
+        symptoms=incident.symptoms,
+        history=incident.history,
+    )
+    if claude_diag:
+        diag = claude_diag
+        diagnosis_source = "claude"
+        diagnosis_confidence = claude_diag.get("confidence")
+    else:
+        diag = generate_mock_diagnosis(incident.equipment_type, incident.symptoms)
+        diagnosis_source = "mock"
+        diagnosis_confidence = None
+
+    # Incidentes criados por administradores entram já aprovados;
+    # os demais (técnicos) ficam pendentes até um admin revisar.
+    approval_status = "approved" if incident.creator_role == "admin" else "pending"
+
     conn.execute("""
-        INSERT INTO incidents VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO incidents (
+            id, title, rack, equipment_type, equipment_name, severity, symptoms, history,
+            status, diagnosis, root_cause, next_steps, created_at, updated_at,
+            approval_status, created_by, reviewed_by, diagnosis_source, diagnosis_confidence
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         inc_id, incident.title, incident.rack, incident.equipment_type,
         incident.equipment_name, incident.severity, incident.symptoms,
         incident.history, "open",
         diag["diagnosis"], diag["root_cause"], diag["next_steps"],
-        now, now
+        now, now, approval_status, incident.created_by, None,
+        diagnosis_source, diagnosis_confidence
     ))
 
     # Atualiza status do asset automaticamente pela severidade
@@ -370,10 +715,39 @@ def create_incident(incident: IncidentCreate):
     conn.execute("UPDATE assets SET status=? WHERE name=?", (asset_status, incident.equipment_name))
 
     conn.commit()
-    
+
     row = conn.execute("SELECT * FROM incidents WHERE id=?", (inc_id,)).fetchone()
     conn.close()
     return dict(row)
+
+@app.patch("/api/incidents/{inc_id}/approval")
+def review_incident(inc_id: str, review: IncidentApproval):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM incidents WHERE id=?", (inc_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Incidente não encontrado")
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE incidents SET approval_status=?, reviewed_by=?, updated_at=? WHERE id=?",
+        (review.status, review.reviewed_by, now, inc_id)
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM incidents WHERE id=?", (inc_id,)).fetchone()
+    conn.close()
+    return dict(row)
+
+@app.delete("/api/incidents/{inc_id}")
+def delete_incident(inc_id: str):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM incidents WHERE id=?", (inc_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Incidente não encontrado")
+    conn.execute("DELETE FROM incidents WHERE id=?", (inc_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": True, "id": inc_id}
 
 @app.get("/api/incidents/{inc_id}")
 def get_incident(inc_id: str):
@@ -550,6 +924,156 @@ def mark_helpful(kb_id: str):
     row = conn.execute("SELECT * FROM knowledge_base WHERE id=?", (kb_id,)).fetchone()
     conn.close()
     return dict(row)
+
+# --- Auth & Users Routes ---
+
+@app.post("/api/auth/register")
+def register_user(data: UserRegister):
+    conn = get_db()
+    existing_username = conn.execute("SELECT id FROM users WHERE username=?", (data.username,)).fetchone()
+    if existing_username:
+        conn.close()
+        raise HTTPException(400, "Nome de usuário já existe.")
+    existing_email = conn.execute("SELECT id FROM users WHERE email=?", (data.email,)).fetchone()
+    if existing_email:
+        conn.close()
+        raise HTTPException(400, "E-mail já cadastrado.")
+
+    user_id = "user-" + str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)",
+        (user_id, data.name, data.username, data.email,
+         hash_password(data.password), "technician", "pending", now, now)
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "pending", "message": "Conta criada. Aguarde a aprovação de um administrador."}
+
+@app.post("/api/auth/login")
+def login_user(data: UserLogin):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE username=?", (data.username,)).fetchone()
+    conn.close()
+    if not row or not verify_password(data.password, row["password_hash"]):
+        raise HTTPException(401, "Usuário ou senha incorretos.")
+    if row["status"] == "pending":
+        raise HTTPException(403, "Sua conta ainda aguarda aprovação de um administrador.")
+    if row["status"] == "rejected":
+        raise HTTPException(403, "Sua solicitação de acesso foi negada. Fale com um administrador.")
+    return {
+        "id": row["id"], "name": row["name"], "username": row["username"],
+        "email": row["email"], "role": row["role"]
+    }
+
+@app.get("/api/users")
+def list_users(status: Optional[str] = None):
+    conn = get_db()
+    query = "SELECT id, name, username, email, role, status, created_at, updated_at FROM users WHERE 1=1"
+    params = []
+    if status:
+        query += " AND status=?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/api/users")
+def create_user_by_admin(data: UserCreateByAdmin):
+    """Criação direta por um administrador — já entra aprovada."""
+    conn = get_db()
+    existing_username = conn.execute("SELECT id FROM users WHERE username=?", (data.username,)).fetchone()
+    if existing_username:
+        conn.close()
+        raise HTTPException(400, "Nome de usuário já existe.")
+    existing_email = conn.execute("SELECT id FROM users WHERE email=?", (data.email,)).fetchone()
+    if existing_email:
+        conn.close()
+        raise HTTPException(400, "E-mail já cadastrado.")
+
+    user_id = "user-" + str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?)",
+        (user_id, data.name, data.username, data.email,
+         hash_password(data.password), data.role, "approved", now, now)
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, name, username, email, role, status, created_at, updated_at FROM users WHERE id=?",
+        (user_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+@app.patch("/api/users/{user_id}/approval")
+def review_user(user_id: str, review: UserApproval):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Usuário não encontrado")
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE users SET status=?, updated_at=? WHERE id=?",
+        (review.status, now, user_id)
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, name, username, email, role, status, created_at, updated_at FROM users WHERE id=?",
+        (user_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+@app.patch("/api/users/{user_id}/role")
+def update_user_role(user_id: str, body: UserRoleUpdate):
+    conn = get_db()
+    row = conn.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Usuário não encontrado")
+    if row["username"] == "admin":
+        conn.close()
+        raise HTTPException(400, "Não é possível alterar o perfil do admin padrão.")
+    conn.execute("UPDATE users SET role=?, updated_at=? WHERE id=?",
+                 (body.role, datetime.now().isoformat(), user_id))
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, name, username, email, role, status, created_at, updated_at FROM users WHERE id=?",
+        (user_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+@app.patch("/api/users/{user_id}/password")
+def reset_user_password(user_id: str, body: UserPasswordReset):
+    conn = get_db()
+    row = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Usuário não encontrado")
+    conn.execute("UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+                 (hash_password(body.password), datetime.now().isoformat(), user_id))
+    conn.commit()
+    conn.close()
+    return {"updated": True}
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: str):
+    conn = get_db()
+    row = conn.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Usuário não encontrado")
+    if row["username"] == "admin":
+        conn.close()
+        raise HTTPException(400, "Não é possível excluir o admin padrão.")
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": True, "id": user_id}
 
 # --- Export Requests Routes ---
 

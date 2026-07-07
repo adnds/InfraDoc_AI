@@ -24,6 +24,10 @@ COPY --chown=user backend/ .
 # Não copiar um infradoc.db antigo — o init_db() cria o banco do zero no container
 RUN rm -f infradoc.db
 
+# system_prompt.txt fica em prompts/ (fora de backend/) — main.py o lê via caminho
+# relativo "../prompts/system_prompt.txt", então precisa existir um nível acima de /home/user/app
+COPY --chown=user prompts/ /home/user/prompts/
+
 # Frontend buildado (dist/) entra como pasta "static" servida pelo FastAPI
 COPY --chown=user --from=frontend-build /app/frontend/dist ./static
 

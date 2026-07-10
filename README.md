@@ -16,6 +16,42 @@ pinned: false
 
 ---
 
+## 🚀 Acesso Rápido
+
+**Space ao vivo (Hugging Face):** https://adnds-infradoc-ai.hf.space
+
+### Credenciais padrão (pré-configuradas)
+
+| Campo | Valor |
+|-------|-------|
+| **Usuário** | `admin` |
+| **Senha** | `admin123` |
+| **Perfil** | Administrador (full access) |
+
+### Passo a passo de acesso
+
+1. **Abra o link**: https://adnds-infradoc-ai.hf.space
+2. **Faça login** com as credenciais acima
+3. **Dashboard**: veja estatísticas de incidentes e assets
+4. **Criar incidente**: clique em "+ Novo Incidente" e descreva um problema (ex: "Servidor SRV-APP-01 reiniciando a cada 2 horas")
+5. **Diagnóstico automático**: após criar, o sistema gera diagnóstico via Groq IA (tag "🟢 groq" indica sucesso)
+6. **Logs de IA** (admin only): vá em Administração → Logs de IA pra ver todas as chamadas da IA com sucesso/erro/tempo
+
+### Checklist de funcionalidades pra testar
+
+- [ ] Login funciona
+- [ ] Dashboard mostra estatísticas
+- [ ] Criar incidente → diagnóstico aparece (tag "groq" não "mock")
+- [ ] Status "Groq conectado" 🟢 aparece na Sidebar (rodapé)
+- [ ] Resolver incidente → artigo aparece em Base de Conhecimento como "⏳ Pendente (IA)"
+- [ ] Admin aprova artigo → ✓ Publicado
+- [ ] Usuários → criar novo usuário → aparece como "⏳ Pendente"
+- [ ] Admin aprova novo usuário → pode fazer login
+- [ ] Logs de IA mostra chamadas com timestamp e tempo de resposta
+- [ ] Exportar relatório → aparece como pendente, admin aprova
+
+---
+
 ## O que o sistema faz
 
 InfraDoc AI é uma plataforma para técnicos e engenheiros de datacenter registrarem, diagnosticarem e acompanharem incidentes de infraestrutura. O técnico descreve o problema (rack afetado, equipamento, sintomas, histórico), e o sistema gera automaticamente um diagnóstico estruturado com causa raiz provável e próximos passos recomendados — via **Groq (Llama 3.3 70B)** com tool use, ou modo mock por regras estáticas quando a variável `GROQ_API_KEY` não está configurada.
@@ -158,7 +194,96 @@ O free tier do Hugging Face Spaces **não tem armazenamento persistente por padr
 
 ---
 
-## Integração com IA — Groq (Llama 3.3 70B)
+## 🔧 Troubleshooting
+
+### "Diagnóstico aparece com tag 'mock', não 'groq'"
+
+**Causa**: GROQ_API_KEY não está configurada ou inválida.
+
+**Solução**:
+1. Acesse https://console.groq.com e obtenha uma chave (gratuita)
+2. No Space, vá em **Settings → Variables and secrets**
+3. Crie uma nova secret com nome exatamente **`GROQ_API_KEY`** e o valor da chave
+4. Espere 30 segundos e recarregue a página
+5. A tag na Sidebar deve mudar pra 🟢 "Groq conectado"
+
+Se ainda assim aparecer 🔴 "Groq desconectado", confirme:
+- Nome da variável é exatamente `GROQ_API_KEY` (maiúscula)
+- Valor começa com `gsk_`
+- Não tem espaços antes/depois
+
+### "Erro 'table incidents has N columns but M values were supplied'"
+
+**Causa**: Versão desatualizada do banco de dados.
+
+**Solução**:
+1. No Space, vá em **Settings → Restart the space**
+2. A função `init_db()` roda automaticamente e cria as tabelas corretas
+
+### "Criar usuário aparece como 'Pendente' e não consigo fazer login"
+
+**Causa**: Usuários criados via "Criar Conta" ficam em fila até admin aprovar.
+
+**Solução**:
+1. Faça login como `admin` / `admin123`
+2. Vá em **Administração → Usuários**
+3. Filtre por **⏳ Pendentes**
+4. Clique em ✓ (checkmark) pra aprovar
+5. Agora o novo usuário pode fazer login
+
+### "Artigo KB não aparece após resolver incidente"
+
+**Causa**: Tempo de processamento ou KB esperando aprovação.
+
+**Solução**:
+1. Vá em **Base de Conhecimento**
+2. Filtre por **⏳ Pendentes (IA)** — deve aparecer lá
+3. Clique em ✓ pra aprovar
+4. Se não aparecer em 10 segundos, recarregue a página
+
+Se nada aparecer:
+- Confirme que o incidente foi marcado como "Resolvido" com uma nota obrigatória
+- Vá em **Administração → Logs de IA** e veja se teve um erro na chamada `kb_draft`
+
+### "Logs de IA vazio / mostra erro"
+
+**Causa**: Groq ainda não foi chamado, ou erro nas primeiras chamadas.
+
+**Solução**:
+1. Crie alguns incidentes (ao menos 3-4) pra ter histórico
+2. Os logs aparecem em ordem reversa (mais recentes no topo)
+3. Se vir muitos erros, volte ao troubleshooting de "tag 'mock'"
+
+### "Não consigo criar admin direto"
+
+**Causa**: A interface so permite criar técnico. Só admin pode criar outro admin.
+
+**Solução**:
+1. Faça login como `admin` (credencial padrão)
+2. Vá em **Administração → Usuários**
+3. Clique em **+ Novo Usuário**
+4. No dropdown **Perfil**, selecione **Administrador**
+5. Preencha e clique em **Criar Usuário** — novo admin entra já aprovado
+
+### "Erro: 'Unable to open database file' no Space"
+
+**Causa**: Permissão do Dockerfile incorreta (raro, já foi corrigido).
+
+**Solução**:
+1. Vá em **Settings → Restart the space**
+2. Se persistir, o Dockerfile precisa de ajuste: camada Python deve ter `RUN chown -R user:user /home/user/app` antes de `USER user`
+
+### "Smartphone: sidebar não fecha ao navegar"
+
+**Causa**: Falha no toggle de menu móvel.
+
+**Solução**:
+1. Recarregue a página
+2. Use o botão ☰ (hambúrguer) no canto superior esquerdo pra abrir/fechar
+
+---
+
+## ⚡ Performance & Notas
 
 ### Arquitetura de LLM (fluxo)
 

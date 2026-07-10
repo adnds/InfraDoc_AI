@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, AlertTriangle, Server, PlusCircle, FileText, Activity, Users, LogOut, Shield, BookOpen, Download, Menu, X } from 'lucide-react'
+import { LayoutDashboard, AlertTriangle, Server, PlusCircle, FileText, Activity, Users, LogOut, Shield, BookOpen, Download, Menu, X, Zap } from 'lucide-react'
 
 const NAV = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
@@ -11,7 +11,7 @@ const NAV = [
   { label: 'Base de Conhecimento', icon: BookOpen, path: '/kb' },
 ]
 
-export default function Sidebar({ openCount = 0, pendingUsers = 0, user, onLogout }) {
+export default function Sidebar({ openCount = 0, pendingUsers = 0, groqConnected = null, user, onLogout }) {
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -81,6 +81,13 @@ export default function Sidebar({ openCount = 0, pendingUsers = 0, user, onLogou
               <Download size={15} />
               Exportações
             </div>
+            <div
+              className={`nav-item ${location.pathname === '/ai-logs' ? 'active' : ''}`}
+              onClick={() => go('/ai-logs')}
+            >
+              <Zap size={15} />
+              Logs de IA
+            </div>
           </>
         )}
       </div>
@@ -120,7 +127,9 @@ export default function Sidebar({ openCount = 0, pendingUsers = 0, user, onLogou
         </button>
 
         <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 8 }}>
-          <span style={{ color: 'var(--accent)' }}>●</span> API online
+          <span style={{ color: groqConnected ? 'var(--green)' : groqConnected === false ? 'var(--red)' : 'var(--yellow)' }}>
+            ● {groqConnected ? 'Groq conectado' : groqConnected === false ? 'Groq desconectado' : 'Verificando...'}
+          </span>
         </div>
       </div>
       </nav>

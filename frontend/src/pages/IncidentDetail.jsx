@@ -80,28 +80,60 @@ function ResolveModal({ onClose, onConfirm }) {
   )
 }
 
-export default function IncidentDetail() {
+export default function IncidentDetail({ user }) {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
   const [incident, setIncident] = useState(null)
   const [showResolveModal, setShowResolveModal] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const isAdmin = user?.role === 'admin'
 
   useEffect(() => {
     api.incidents.get(id).then(setIncident).catch(() => navigate('/incidents'))
   }, [id])
 
   const handleResolve = async (note) => {
-    const updated = await api.incidents.update(id, { status: 'resolved', diagnosis: incident.diagnosis + '\n\n📝 NOTA DE ENCERRAMENTO:\n' + note })
+    const updated = await api.incidents.update(id, {
+      status: 'resolved',
+      diagnosis: incident.diagnosis + '\n\n📝 NOTA DE ENCERRAMENTO:\n' + note,
+      resolution_note: note,
+      resolved_by: user?.username,
+    })
     setIncident(updated)
-    toast('Incidente encerrado com sucesso!', 'success')
+    toast('Incidente encerrado! Um rascunho de artigo foi enviado para aprovação na Base de Conhecimento.', 'success')
     setShowResolveModal(false)
   }
 
   const handleReopen = async () => {
-    const updated = await api.incidents.update(id, { status: 'open' })
-    setIncident(updated)
-    toast('Incidente reaberto.', 'info')
+    // Admin reabre direto; técnico precisa solicitar e aguardar aprovação do admin.
+    setBusy(true)
+    try {
+      if (isAdmin) {
+        const updated = await api.incidents.update(id, { status: 'open' })
+        setIncident(updated)
+        toast('Incidente reaberto.', 'info')
+      } else {
+        const updated = await api.incidents.requestReopen(id, user?.username)
+        setIncident(updated)
+        toast('Solicitação de reabertura enviada! Aguarde a aprovação de um administrador.', 'success')
+      }
+    } catch (e) {
+      toast(e.message || 'Erro ao processar reabertura.', 'error')
+    }
+    setBusy(false)
+  }
+
+  const handleReopenReview = async (approve) => {
+    setBusy(true)
+    try {
+      const updated = await api.incidents.reviewReopen(id, approve, user?.username)
+      setIncident(updated)
+      toast(approve ? 'Reabertura aprovada — incidente reaberto.' : 'Solicitação de reabertura negada.', approve ? 'success' : 'info')
+    } catch {
+      toast('Erro ao revisar solicitação de reabertura.', 'error')
+    }
+    setBusy(false)
   }
 
   const copySteps = () => {
@@ -119,6 +151,8 @@ export default function IncidentDetail() {
     ? incident.diagnosis.split('\n\n📝 NOTA DE ENCERRAMENTO:')[0]
     : incident.diagnosis
 
+  const reopenPending = incident.reopen_status === 'pending'
+
   return (
     <>
       <div className="page-header">
@@ -133,6 +167,7 @@ export default function IncidentDetail() {
             <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>#{incident.id}</span>
             <span className={`badge badge-${incident.severity}`}>{SEV_LABELS[incident.severity]}</span>
             <span className={`badge badge-${incident.status}`}>{incident.status === 'open' ? 'Aberto' : 'Resolvido'}</span>
+            {reopenPending && <span className="badge badge-medium">⏳ Reabertura pendente</span>}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -141,10 +176,23 @@ export default function IncidentDetail() {
               <CheckCircle size={14} />
               Marcar Resolvido
             </button>
+          ) : reopenPending ? (
+            isAdmin ? (
+              <>
+                <button className="btn btn-danger" disabled={busy} onClick={() => handleReopenReview(false)}>Negar Reabertura</button>
+                <button className="btn btn-primary" disabled={busy} onClick={() => handleReopenReview(true)}>
+                  <RefreshCw size={14} /> Aprovar Reabertura
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-secondary" disabled style={{ opacity: 0.6 }}>
+                <RefreshCw size={14} /> Aguardando aprovação
+              </button>
+            )
           ) : (
-            <button className="btn btn-secondary" onClick={handleReopen}>
+            <button className="btn btn-secondary" disabled={busy} onClick={handleReopen}>
               <RefreshCw size={14} />
-              Reabrir
+              {isAdmin ? 'Reabrir' : 'Solicitar Reabertura'}
             </button>
           )}
         </div>

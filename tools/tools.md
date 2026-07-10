@@ -2,14 +2,14 @@
 
 ## Por que Tools ao invés de contexto direto?
 
-Na arquitetura final, o Claude recebe as informações do incidente e pode **buscar contexto adicional** via tools, em vez de receber tudo de uma vez no prompt. Isso:
+Na arquitetura final, recebe as informações do incidente e pode **buscar contexto adicional** via tools, em vez de receber tudo de uma vez no prompt. Isso:
 1. Reduz tokens desnecessários (o modelo busca só o que precisa)
 2. Permite respostas mais ricas (o modelo pode "investigar" antes de diagnosticar)
 3. Simula o comportamento de um técnico que consulta sistemas reais
 
 ---
 
-## Tool 1: get_rack_inventory
+## Tool 1: get_rack_inventory (obter_inventario_do_rack)
 
 Retorna todos os assets do rack especificado.
 
@@ -78,7 +78,7 @@ Retorna histórico de incidentes de um equipamento específico.
 
 ---
 
-## Tool 3: search_knowledge_base
+## Tool 3: search_knowledge_base (pesquisar_base_de_conhecimento)
 
 Busca na base de conhecimento de soluções conhecidas.
 
@@ -106,7 +106,7 @@ Busca na base de conhecimento de soluções conhecidas.
 
 ---
 
-## Tool 4: create_maintenance_ticket
+## Tool 4: create_maintenance_ticket (criar_ticket_de_manutencao)
 
 Cria um ticket de manutenção programada.
 

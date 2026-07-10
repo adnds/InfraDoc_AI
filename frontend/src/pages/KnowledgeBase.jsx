@@ -1,17 +1,7 @@
 import { useEffect, useState } from 'react'
-import { BookOpen, Plus, Search, Eye, ThumbsUp, Trash2, X, ChevronDown, ChevronUp } from 'lucide-react'
+import { BookOpen, Plus, Search, Eye, ThumbsUp, Trash2, X, ChevronDown, ChevronUp, Check, Sparkles } from 'lucide-react'
+import { api } from '../api'
 import { useToast } from '../components/Toast'
-
-const BASE = '/api'
-const req = async (path, opts = {}) => {
-  const res = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
-}
 
 const TYPE_LABELS = { server: 'Servidor', switch: 'Switch', firewall: 'Firewall', pdu: 'PDU', ups: 'No-break', storage: 'Storage', router: 'Roteador', other: 'Outro' }
 const TYPES = Object.entries(TYPE_LABELS)
@@ -84,12 +74,13 @@ function AddModal({ onClose, onSave, user }) {
   )
 }
 
-function ArticleCard({ article, onDelete, onHelpful, isAdmin }) {
+function ArticleCard({ article, onDelete, onHelpful, onApprove, onReject, isAdmin }) {
   const [expanded, setExpanded] = useState(false)
+  const isPending = article.status === 'pending'
 
   return (
     <div style={{
-      background: 'var(--bg-surface)', border: '1px solid var(--border)',
+      background: 'var(--bg-surface)', border: isPending ? '1px solid rgba(227,179,65,0.4)' : '1px solid var(--border)',
       borderRadius: 10, overflow: 'hidden', marginBottom: 12
     }}>
       {/* Header */}
@@ -102,6 +93,12 @@ function ArticleCard({ article, onDelete, onHelpful, isAdmin }) {
             <span className={`badge badge-low`} style={{ fontSize: 10 }}>
               {TYPE_LABELS[article.equipment_type] || article.equipment_type}
             </span>
+            {article.source === 'ai' && (
+              <span className="badge" style={{ fontSize: 10, background: 'var(--accent-dim)', color: 'var(--accent)', border: '1px solid var(--accent-border)' }}>
+                <Sparkles size={9} style={{ display: 'inline', marginRight: 3 }} />gerado por IA
+              </span>
+            )}
+            {isPending && <span className="badge badge-medium" style={{ fontSize: 10 }}>⏳ Pendente de aprovação</span>}
             {article.keywords.split(',').slice(0, 3).map(k => k.trim()).filter(Boolean).map(k => (
               <span key={k} style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '1px 6px', borderRadius: 4, fontFamily: 'var(--font-mono)' }}>
                 {k}
@@ -153,9 +150,21 @@ function ArticleCard({ article, onDelete, onHelpful, isAdmin }) {
               {fmt(article.created_at)}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => onHelpful(article.id)}>
-                <ThumbsUp size={11} /> Útil ({article.helpful})
-              </button>
+              {isAdmin && isPending && (
+                <>
+                  <button className="btn btn-danger" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => onReject(article.id)}>
+                    <X size={11} /> Negar
+                  </button>
+                  <button className="btn btn-primary" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => onApprove(article.id)}>
+                    <Check size={11} /> Aprovar e Publicar
+                  </button>
+                </>
+              )}
+              {!isPending && (
+                <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => onHelpful(article.id)}>
+                  <ThumbsUp size={11} /> Útil ({article.helpful})
+                </button>
+              )}
               {isAdmin && (
                 <button className="btn btn-danger" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => onDelete(article.id)}>
                   <Trash2 size={11} />
@@ -174,45 +183,63 @@ export default function KnowledgeBase({ user }) {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState('')
+  const [filterStatus, setFilterStatus] = useState('approved')
   const [showAdd, setShowAdd] = useState(false)
   const toast = useToast()
   const isAdmin = user?.role === 'admin'
 
   const load = () => {
     setLoading(true)
-    const params = new URLSearchParams()
-    if (search) params.set('search', search)
-    if (filterType) params.set('equipment_type', filterType)
-    req(`/kb?${params}`).then(data => { setArticles(data); setLoading(false) })
+    const params = { search, equipment_type: filterType, status: isAdmin ? filterStatus : 'approved' }
+    api.kb.list(params).then(data => { setArticles(data); setLoading(false) }).catch(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [search, filterType])
+  useEffect(() => { load() }, [search, filterType, filterStatus])
 
   const handleAdd = async (form) => {
-    await req('/kb', { method: 'POST', body: form })
+    await api.kb.create(form)
     toast('Artigo publicado na base de conhecimento!', 'success')
     setShowAdd(false)
     load()
   }
 
   const handleDelete = async (id) => {
-    await req(`/kb/${id}`, { method: 'DELETE' })
+    if (!window.confirm('Excluir este artigo? Essa ação não pode ser desfeita.')) return
+    await api.kb.remove(id)
     toast('Artigo removido.', 'success')
     load()
   }
 
+  const handleApprove = async (id) => {
+    await api.kb.approve(id, user?.username)
+    toast('Artigo aprovado e publicado!', 'success')
+    load()
+  }
+
+  const handleReject = async (id) => {
+    await api.kb.reject(id, user?.username)
+    toast('Artigo negado.', 'info')
+    load()
+  }
+
   const handleHelpful = async (id) => {
-    await req(`/kb/${id}/helpful`, { method: 'POST' })
+    await api.kb.helpful(id)
     toast('Obrigado pelo feedback!', 'success')
     load()
   }
+
+  const pendingCount = isAdmin && filterStatus === 'pending' ? articles.length : null
 
   return (
     <>
       <div className="page-header">
         <div>
           <div className="page-title">Base de Conhecimento</div>
-          <div className="page-subtitle">{articles.length} artigo{articles.length !== 1 ? 's' : ''} · soluções documentadas pela equipe</div>
+          <div className="page-subtitle">
+            {pendingCount !== null && pendingCount > 0
+              ? <span style={{ color: 'var(--yellow)' }}>⚠ {pendingCount} artigo{pendingCount > 1 ? 's' : ''} gerado{pendingCount > 1 ? 's' : ''} por IA aguardando aprovação</span>
+              : `${articles.length} artigo${articles.length !== 1 ? 's' : ''} · soluções documentadas pela equipe`}
+          </div>
         </div>
         <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
           <Plus size={14} /> Novo Artigo
@@ -220,6 +247,17 @@ export default function KnowledgeBase({ user }) {
       </div>
 
       <div className="page-body">
+        {/* Abas de status — só admin vê rascunhos pendentes/negados */}
+        {isAdmin && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            {[['approved', '✓ Publicados'], ['pending', '⏳ Pendentes (IA)'], ['rejected', '✗ Negados']].map(([val, label]) => (
+              <button key={val} className={`btn ${filterStatus === val ? 'btn-primary' : 'btn-secondary'}`} style={{ fontSize: 12 }} onClick={() => setFilterStatus(val)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Filters */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
           <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
@@ -238,9 +276,9 @@ export default function KnowledgeBase({ user }) {
           <div className="empty-state">
             <BookOpen size={32} />
             <div style={{ fontSize: 15, fontWeight: 600, marginTop: 8, color: 'var(--text-secondary)' }}>
-              {search || filterType ? 'Nenhum artigo encontrado' : 'Base vazia'}
+              {search || filterType ? 'Nenhum artigo encontrado' : filterStatus === 'pending' ? 'Nenhum rascunho pendente' : 'Base vazia'}
             </div>
-            <p>{search ? 'Tente outros termos.' : 'Publique o primeiro artigo com uma solução documentada.'}</p>
+            <p>{search ? 'Tente outros termos.' : filterStatus === 'pending' ? 'Rascunhos gerados por IA ao resolver incidentes aparecerão aqui.' : 'Publique o primeiro artigo com uma solução documentada.'}</p>
           </div>
         ) : (
           <div>
@@ -250,6 +288,8 @@ export default function KnowledgeBase({ user }) {
                 article={article}
                 onDelete={handleDelete}
                 onHelpful={handleHelpful}
+                onApprove={handleApprove}
+                onReject={handleReject}
                 isAdmin={isAdmin}
               />
             ))}

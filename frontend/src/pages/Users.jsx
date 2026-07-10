@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users as UsersIcon, Trash2, Shield, Wrench, Plus, X, Lock, Check, Clock } from 'lucide-react'
+import { Users as UsersIcon, Trash2, Shield, Wrench, Plus, X, Lock, Check, Clock, Pencil, Power, ScrollText } from 'lucide-react'
 import { api } from '../api'
 import { useToast } from '../components/Toast'
 
@@ -9,6 +9,55 @@ function StatusBadge({ status }) {
   if (status === 'approved') return <span className="badge badge-online">✓ Aprovado</span>
   if (status === 'rejected') return <span className="badge badge-critical">✗ Negado</span>
   return <span className="badge badge-medium">⏳ Pendente</span>
+}
+
+function EditUserModal({ target, onClose, onSave }) {
+  const [form, setForm] = useState({ name: target.name, email: target.email })
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handle = async () => {
+    if (!form.name || !form.email) { setError('Preencha todos os campos.'); return }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(form.email)) { setError('E-mail inválido.'); return }
+    setLoading(true)
+    try {
+      await onSave(form)
+    } catch (e) {
+      setError(e.message || 'Erro ao salvar.')
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 420 }}>
+        <div className="modal-header">
+          <div className="modal-title">Editar Usuário — {target.username}</div>
+          <button className="btn btn-ghost" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="form-group">
+            <label className="form-label">Nome Completo</label>
+            <input className="form-control" value={form.name} onChange={e => { setForm(f => ({ ...f, name: e.target.value })); setError('') }} autoFocus />
+          </div>
+          <div className="form-group">
+            <label className="form-label">E-mail</label>
+            <input className="form-control" type="email" value={form.email} onChange={e => { setForm(f => ({ ...f, email: e.target.value })); setError('') }} />
+          </div>
+          {error && (
+            <div style={{ background: 'var(--red-dim)', border: '1px solid rgba(248,81,73,0.3)', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: 'var(--red)' }}>
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={handle} disabled={loading}>{loading ? 'Salvando...' : 'Salvar'}</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function AddUserModal({ onClose, onSave }) {
@@ -82,6 +131,51 @@ function AddUserModal({ onClose, onSave }) {
   )
 }
 
+function AuditLogPanel() {
+  const [entries, setEntries] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.auditLog.list(100).then(data => { setEntries(data); setLoading(false) }).catch(() => setLoading(false))
+  }, [])
+
+  const ACTION_LABELS = {
+    create_user: 'Criou usuário', approve_user: 'Aprovou cadastro', reject_user: 'Negou cadastro',
+    change_role: 'Alterou perfil', activate_user: 'Ativou usuário', deactivate_user: 'Desativou usuário',
+    edit_user: 'Editou usuário', reset_password: 'Redefiniu senha', delete_user: 'Excluiu usuário',
+  }
+
+  return (
+    <div className="card" style={{ padding: 0, marginTop: 16 }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <ScrollText size={14} color="var(--text-muted)" />
+        <div className="card-title" style={{ marginBottom: 0 }}>Log de Auditoria</div>
+      </div>
+      {loading ? (
+        <div className="page-loading">Carregando log...</div>
+      ) : entries.length === 0 ? (
+        <div style={{ padding: 20, fontSize: 12, color: 'var(--text-muted)' }}>Nenhuma operação registrada ainda.</div>
+      ) : (
+        <table className="data-table">
+          <thead>
+            <tr><th>Quando</th><th>Ator</th><th>Ação</th><th>Detalhes</th></tr>
+          </thead>
+          <tbody>
+            {entries.map(e => (
+              <tr key={e.id}>
+                <td style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmt(e.created_at)}</td>
+                <td><span className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>{e.actor || 'desconhecido'}</span></td>
+                <td style={{ fontSize: 12 }}>{ACTION_LABELS[e.action] || e.action}</td>
+                <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.details}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
 function ResetPasswordModal({ target, onClose, onSave }) {
   const [form, setForm] = useState({ password: '', confirm: '' })
   const [error, setError] = useState('')
@@ -137,6 +231,8 @@ export default function Users({ user }) {
   const [filter, setFilter] = useState('pending')
   const [showAdd, setShowAdd] = useState(false)
   const [resetTarget, setResetTarget] = useState(null)
+  const [editTarget, setEditTarget] = useState(null)
+  const [showAuditLog, setShowAuditLog] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const toast = useToast()
   const isAdmin = user?.role === 'admin'
@@ -151,7 +247,7 @@ export default function Users({ user }) {
   useEffect(() => { if (isAdmin) load() }, [filter])
 
   const handleAdd = async (form) => {
-    await api.users.create(form)
+    await api.users.create({ ...form, created_by: user?.username })
     toast('Usuário criado e já aprovado!', 'success')
     setShowAdd(false)
     load()
@@ -187,7 +283,7 @@ export default function Users({ user }) {
     if (!window.confirm(`Excluir o usuário "${u.name}"? Essa ação não pode ser desfeita.`)) return
     setBusyId(u.id)
     try {
-      await api.users.remove(u.id)
+      await api.users.remove(u.id, user?.username)
       toast('Usuário removido.', 'success')
       load()
     } catch {
@@ -197,16 +293,36 @@ export default function Users({ user }) {
   }
 
   const handleReset = async (password) => {
-    await api.users.resetPassword(resetTarget.id, password)
+    await api.users.resetPassword(resetTarget.id, password, user?.username)
     toast(`Senha de ${resetTarget.username} redefinida.`, 'success')
     setResetTarget(null)
+  }
+
+  const handleEdit = async (form) => {
+    await api.users.edit(editTarget.id, form, user?.username)
+    toast('Usuário atualizado.', 'success')
+    setEditTarget(null)
+    load()
+  }
+
+  const handleToggleActive = async (u) => {
+    if (u.username === 'admin' && u.is_active) { toast('Não é possível desativar o admin padrão.', 'error'); return }
+    setBusyId(u.id)
+    try {
+      await api.users.setActive(u.id, !u.is_active, user?.username)
+      toast(u.is_active ? `${u.name} desativado.` : `${u.name} reativado.`, 'info')
+      load()
+    } catch {
+      toast('Erro ao alterar status do usuário.', 'error')
+    }
+    setBusyId(null)
   }
 
   const handleRoleToggle = async (u) => {
     if (u.username === 'admin') { toast('Não é possível alterar o perfil do admin padrão.', 'error'); return }
     const newRole = u.role === 'admin' ? 'technician' : 'admin'
     try {
-      await api.users.updateRole(u.id, newRole)
+      await api.users.updateRole(u.id, newRole, user?.username)
       toast('Perfil atualizado.', 'success')
       load()
     } catch {
@@ -281,13 +397,14 @@ export default function Users({ user }) {
                   <th>E-mail</th>
                   <th>Perfil</th>
                   <th>Status</th>
+                  <th>Conta</th>
                   <th>Criado em</th>
                   <th>Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {users.map(u => (
-                  <tr key={u.id}>
+                  <tr key={u.id} style={{ opacity: u.is_active ? 1 : 0.5 }}>
                     <td style={{ fontWeight: 500 }}>
                       {u.name}
                       {u.id === user?.id && (
@@ -305,6 +422,7 @@ export default function Users({ user }) {
                       </span>
                     </td>
                     <td><StatusBadge status={u.status} /></td>
+                    <td>{u.is_active ? <span className="badge badge-online">Ativa</span> : <span className="badge badge-offline">Inativa</span>}</td>
                     <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{fmt(u.created_at)}</td>
                     <td>
                       <div style={{ display: 'flex', gap: 6 }}>
@@ -321,9 +439,19 @@ export default function Users({ user }) {
                           </>
                         )}
                         <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
+                          onClick={() => setEditTarget(u)} title="Editar">
+                          <Pencil size={11} />
+                        </button>
+                        <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
                           onClick={() => setResetTarget(u)} title="Redefinir senha">
                           <Lock size={11} />
                         </button>
+                        {u.id !== user?.id && !(u.username === 'admin' && u.is_active) && (
+                          <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 8px', color: u.is_active ? 'var(--yellow)' : 'var(--green)' }}
+                            disabled={busyId === u.id} onClick={() => handleToggleActive(u)} title={u.is_active ? 'Desativar' : 'Ativar'}>
+                            <Power size={11} />
+                          </button>
+                        )}
                         {u.username !== 'admin' && u.id !== user?.id && (
                           <button className="btn btn-danger" style={{ fontSize: 11, padding: '4px 8px' }}
                             disabled={busyId === u.id} onClick={() => handleDelete(u)} title="Excluir">
@@ -340,12 +468,19 @@ export default function Users({ user }) {
         </div>
 
         <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--bg-surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>
-          <strong style={{ color: 'var(--text-secondary)' }}>Como funciona:</strong> quando alguém se cadastra pela tela de login ("Criar Conta"), a conta fica <strong>pendente</strong> até um administrador aprovar aqui. Só depois disso o login passa a funcionar. Contas criadas diretamente por um admin (botão "Novo Usuário") já entram aprovadas.
+          <strong style={{ color: 'var(--text-secondary)' }}>Como funciona:</strong> quando alguém se cadastra pela tela de login ("Criar Conta"), a conta fica <strong>pendente</strong> até um administrador aprovar aqui. Só depois disso o login passa a funcionar. Contas criadas diretamente por um admin (botão "Novo Usuário") já entram aprovadas. Toda operação administrativa (criar, editar, aprovar, ativar/desativar, redefinir senha, excluir) fica registrada no log de auditoria abaixo.
         </div>
+
+        <button className="btn btn-secondary" style={{ marginTop: 12, fontSize: 12 }} onClick={() => setShowAuditLog(s => !s)}>
+          <ScrollText size={13} /> {showAuditLog ? 'Ocultar' : 'Ver'} Log de Auditoria
+        </button>
+
+        {showAuditLog && <AuditLogPanel />}
       </div>
 
       {showAdd && <AddUserModal onClose={() => setShowAdd(false)} onSave={handleAdd} />}
       {resetTarget && <ResetPasswordModal target={resetTarget} onClose={() => setResetTarget(null)} onSave={handleReset} />}
+      {editTarget && <EditUserModal target={editTarget} onClose={() => setEditTarget(null)} onSave={handleEdit} />}
     </>
   )
 }

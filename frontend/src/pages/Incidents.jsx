@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, Filter, Search, Check, X, Trash2, Clock } from 'lucide-react'
+import { AlertTriangle, Filter, Search, Check, X, Trash2, Clock, RefreshCw } from 'lucide-react'
 import { api } from '../api'
 import { useToast } from '../components/Toast'
 
@@ -104,6 +104,32 @@ export default function Incidents({ user }) {
     setBusyId(null)
   }
 
+  const handleReopenApprove = async (e, inc) => {
+    e.stopPropagation()
+    setBusyId(inc.id)
+    try {
+      await api.incidents.reviewReopen(inc.id, true, user?.username)
+      toast('Reabertura aprovada.', 'success')
+      load()
+    } catch {
+      toast('Erro ao aprovar reabertura.', 'error')
+    }
+    setBusyId(null)
+  }
+
+  const handleReopenReject = async (e, inc) => {
+    e.stopPropagation()
+    setBusyId(inc.id)
+    try {
+      await api.incidents.reviewReopen(inc.id, false, user?.username)
+      toast('Reabertura negada.', 'info')
+      load()
+    } catch {
+      toast('Erro ao negar reabertura.', 'error')
+    }
+    setBusyId(null)
+  }
+
   return (
     <>
       <div className="page-header">
@@ -195,7 +221,7 @@ export default function Incidents({ user }) {
                     <td><span className="mono" style={{ fontSize: 12 }}>{inc.equipment_name}</span></td>
                     <td><span className="mono" style={{ fontSize: 12 }}>{inc.rack}</span></td>
                     <td><span className={`badge badge-${inc.severity}`}>{SEV_LABELS[inc.severity]}</span></td>
-                    <td><span className={`badge badge-${inc.status}`}>{inc.status === 'open' ? 'Aberto' : 'Resolvido'}</span></td>
+                    <td><span className={`badge badge-${inc.status}`}>{inc.status === 'open' ? 'Aberto' : 'Resolvido'}</span> {inc.reopen_status === 'pending' && <span className="badge badge-medium" style={{ marginLeft: 4 }}>⏳ reabertura</span>}</td>
                     {isAdmin && <td><ApprovalBadge status={inc.approval_status} /></td>}
                     <td style={{ color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{timeAgo(inc.created_at)}</td>
                     {isAdmin && (
@@ -208,6 +234,16 @@ export default function Incidents({ user }) {
                               </button>
                               <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }} disabled={busyId === inc.id} onClick={e => handleReject(e, inc)} title="Rejeitar">
                                 <X size={12} />
+                              </button>
+                            </>
+                          )}
+                          {inc.reopen_status === 'pending' && (
+                            <>
+                              <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }} disabled={busyId === inc.id} onClick={e => handleReopenReject(e, inc)} title="Negar reabertura">
+                                <X size={12} />
+                              </button>
+                              <button className="btn btn-secondary" style={{ fontSize: 11, padding: '4px 8px', color: 'var(--green)' }} disabled={busyId === inc.id} onClick={e => handleReopenApprove(e, inc)} title="Aprovar reabertura">
+                                <RefreshCw size={12} />
                               </button>
                             </>
                           )}

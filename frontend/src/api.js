@@ -33,9 +33,20 @@ export const api = {
     create: (data) => req('/users', { method: 'POST', body: data }),
     approve: (id, reviewed_by) => req(`/users/${id}/approval`, { method: 'PATCH', body: { status: 'approved', reviewed_by } }),
     reject: (id, reviewed_by) => req(`/users/${id}/approval`, { method: 'PATCH', body: { status: 'rejected', reviewed_by } }),
-    updateRole: (id, role) => req(`/users/${id}/role`, { method: 'PATCH', body: { role } }),
-    resetPassword: (id, password) => req(`/users/${id}/password`, { method: 'PATCH', body: { password } }),
-    remove: (id) => req(`/users/${id}`, { method: 'DELETE' }),
+    updateRole: (id, role, actor) => req(`/users/${id}/role`, { method: 'PATCH', body: { role, actor } }),
+    resetPassword: (id, password, actor) => req(`/users/${id}/password`, { method: 'PATCH', body: { password, actor } }),
+    edit: (id, data, actor) => req(`/users/${id}`, { method: 'PATCH', body: { ...data, actor } }),
+    setActive: (id, active, actor) => req(`/users/${id}/active`, { method: 'PATCH', body: { active, actor } }),
+    remove: (id, actor) => req(`/users/${id}` + (actor ? `?actor=${encodeURIComponent(actor)}` : ''), { method: 'DELETE' }),
+  },
+  auditLog: {
+    list: (limit = 100) => req(`/audit-log?limit=${limit}`),
+  },
+  aiLogs: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined))
+      return req('/ai-logs' + (q.toString() ? '?' + q : ''))
+    },
   },
   incidents: {
     list: (params = {}) => {
@@ -48,6 +59,20 @@ export const api = {
     approve: (id, reviewed_by) => req(`/incidents/${id}/approval`, { method: 'PATCH', body: { status: 'approved', reviewed_by } }),
     reject: (id, reviewed_by) => req(`/incidents/${id}/approval`, { method: 'PATCH', body: { status: 'rejected', reviewed_by } }),
     remove: (id) => req(`/incidents/${id}`, { method: 'DELETE' }),
+    requestReopen: (id, requested_by) => req(`/incidents/${id}/request-reopen`, { method: 'POST', body: { requested_by } }),
+    reviewReopen: (id, approve, reviewed_by) => req(`/incidents/${id}/reopen-review`, { method: 'PATCH', body: { approve, reviewed_by } }),
+  },
+  kb: {
+    list: (params = {}) => {
+      const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v))
+      return req('/kb' + (q.toString() ? '?' + q : ''))
+    },
+    get: (id) => req(`/kb/${id}`),
+    create: (data) => req('/kb', { method: 'POST', body: data }),
+    approve: (id, reviewed_by) => req(`/kb/${id}/approval`, { method: 'PATCH', body: { status: 'approved', reviewed_by } }),
+    reject: (id, reviewed_by) => req(`/kb/${id}/approval`, { method: 'PATCH', body: { status: 'rejected', reviewed_by } }),
+    remove: (id) => req(`/kb/${id}`, { method: 'DELETE' }),
+    helpful: (id) => req(`/kb/${id}/helpful`, { method: 'POST' }),
   },
   assets: {
     list: (params = {}) => {

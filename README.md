@@ -467,3 +467,4 @@ Com temperatura `0.7`, o Llama 3.3 ocasionalmente adicionava texto fora do JSON 
 O ambiente onde este código foi desenvolvido com o agente de codificação não tinha acesso à internet, então o loop de tool use foi escrito e revisado contra a documentação oficial da API da Groq, mas **ainda não foi testado ponta a ponta com uma chamada real**. Antes da apresentação final, é necessário: (1) configurar `GROQ_API_KEY` como Secret no Space, (2) criar pelo menos um incidente de cada severidade e confirmar que `diagnosis_source` vem `"groq"` na resposta, e (3) verificar nos logs se alguma tool foi de fato chamada pelo modelo — e se o Llama 3.3 realmente respeita o formato JSON estrito na prática, já que é o ponto historicamente mais frágil dessa integração (ver item 6 acima). Se algo quebrar nesse teste, documentar aqui o que precisou de ajuste.
 # InfraDoc_AI
 # InfraDoc_AI
+# InfraDoc_AI

@@ -584,6 +584,41 @@ def _load_system_prompt() -> str:
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
+def _coerce_tool_arguments(tool_name: str, args: dict) -> dict:
+    """
+    Converte argumentos de string para seu tipo esperado baseado no schema das ferramentas.
+    Previne erros de validação do Groq quando o modelo envia argumentos como string.
+    
+    Exemplo: limit "5" (string) → 5 (int)
+    """
+    tool_specs = {tc["function"]["name"]: tc["function"] for tc in GROQ_TOOLS}
+    
+    if tool_name not in tool_specs:
+        return args
+    
+    spec = tool_specs[tool_name]
+    properties = spec.get("parameters", {}).get("properties", {})
+    
+    for param_name, param_def in properties.items():
+        if param_name in args:
+            param_type = param_def.get("type")
+            
+            # Integer: string "5" → int 5
+            if param_type == "integer" and isinstance(args[param_name], str):
+                try:
+                    args[param_name] = int(args[param_name])
+                except (ValueError, TypeError):
+                    pass
+            
+            # Number (float): string "3.14" → float 3.14
+            elif param_type == "number" and isinstance(args[param_name], str):
+                try:
+                    args[param_name] = float(args[param_name])
+                except (ValueError, TypeError):
+                    pass
+    
+    return args
+
 def generate_groq_diagnosis(incident_id: str, equipment_type: str, equipment_name: str, rack: str,
                              severity: str, symptoms: str, history: Optional[str]) -> Optional[dict]:
     """Gera o diagnóstico chamando a API da Groq (Llama 3.3 70B) com tool use. Retorna None em
@@ -652,6 +687,7 @@ def generate_groq_diagnosis(incident_id: str, equipment_type: str, equipment_nam
                     fn = TOOL_IMPLEMENTATIONS.get(tc.function.name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
+                        args = _coerce_tool_arguments(tc.function.name, args)  # FIX: Converter tipos de argumentos
                         result = fn(**args) if fn else {"error": f"Ferramenta desconhecida: {tc.function.name}"}
                     except Exception as tool_err:
                         result = {"error": str(tool_err)}
@@ -1631,4 +1667,3 @@ if os.path.isdir(STATIC_DIR):
         if full_path and os.path.isfile(candidate):
             return FileResponse(candidate)
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
-
